@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.0.1
+// @version      7.1.0
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -41,18 +41,18 @@
     // so the script can be hosted online for automatic updates
     haUrl: GM_getValue('haUrl', 'http://homeassistant.local:8123'),
     webhookId: GM_getValue('webhookId', ''),
-    sendCompleted: true, // mission completed
-    sendMissing: true, // "Missende voertuigen" appears on a mission
+    sendCompleted: GM_getValue('opt_sendCompleted', true), // mission completed
+    sendMissing: GM_getValue('opt_sendMissing', true), // "Missende voertuigen" appears on a mission
     sendStateChanges: false, // mission turned red / yellow / green
     sendSpeakRequests: false, // vehicle in status 5 (spraakaanvraag)
 
     // --- Dispatch assistant ---
-    dispatchAssist: true, // pre-select vehicles in the mission window (you still press Alarmeren)
+    dispatchAssist: GM_getValue('opt_dispatchAssist', true), // pre-select vehicles in the mission window (you still press Alarmeren)
     minChance: 50, // include requirements that are only needed with this % chance or higher
     focusAlertNext: true, // put keyboard focus on "Alarmeren en volgende" (press Enter to dispatch)
-    queueBusyVehicles: true, // nothing free? queue a vehicle that is on scene elsewhere (Dooralarmeren)
+    queueBusyVehicles: GM_getValue('opt_queueBusyVehicles', true), // nothing free? queue a vehicle that is on scene elsewhere (Dooralarmeren)
     missionTypesCacheHours: 24,
-    autoReturnSurplus: true, // mission running with nothing missing? send own vehicles still driving there back to station
+    autoReturnSurplus: GM_getValue('opt_autoReturnSurplus', true), // mission running with nothing missing? send own vehicles still driving there back to station
 
     // --- VRU stations & vehicles ---
     vru: {
@@ -65,7 +65,7 @@
       personnelPanel: true, // 👷 personnel panel (specialists, binding, transfers, training advice)
     },
 
-    debug: false, // true = log every step to the browser console (F12)
+    debug: GM_getValue('opt_debug', false), // true = log every step to the browser console (F12)
   };
 
   const log = (...args) => CONFIG.debug && console.log('[MKS→HA]', ...args);
@@ -83,6 +83,47 @@
       GM_setValue('webhookId', id.trim());
       window.alert('Opgeslagen. Herlaad de pagina.');
     });
+
+    // On/off switches, stored per browser (Tampermonkey menu)
+    const TOGGLES = [
+      ['dispatchAssist', 'Alarmeerhulp'],
+      ['queueBusyVehicles', 'Dooralarmeren bij tekort'],
+      ['autoReturnSurplus', 'Overbodige voertuigen terugsturen'],
+      ['sendCompleted', 'HA: melding afgerond'],
+      ['sendMissing', 'HA: missende voertuigen'],
+      ['debug', 'Debug-log in console'],
+    ];
+    TOGGLES.forEach(([key, label]) =>
+      GM_registerMenuCommand(`${CONFIG[key] ? '✅' : '⬜'} ${label}`, () => {
+        GM_setValue(`opt_${key}`, !CONFIG[key]);
+        window.alert(`${label} ${CONFIG[key] ? 'uit' : 'aan'}gezet. Herlaad de pagina.`);
+      })
+    );
+  }
+
+  /**
+   * One shared, throttled watcher for DOM changes on the main page. The game updates the
+   * mission list constantly; callbacks run at most once per animation frame, and only when nodes were added.
+   */
+  const bodyChangeCallbacks = [];
+  let bodyChangeScheduled = false;
+  function onBodyChange(callback) {
+    bodyChangeCallbacks.push(callback);
+    if (bodyChangeCallbacks.length > 1) return;
+    new MutationObserver((records) => {
+      if (bodyChangeScheduled || !records.some((r) => r.addedNodes.length)) return;
+      bodyChangeScheduled = true;
+      requestAnimationFrame(() => {
+        bodyChangeScheduled = false;
+        bodyChangeCallbacks.forEach((cb) => {
+          try {
+            cb();
+          } catch (e) {
+            console.error('[MKS→HA] DOM watcher', e);
+          }
+        });
+      });
+    }).observe(document.body, { childList: true, subtree: true });
   }
 
   // Started at the bottom of the script, after all constants are defined
@@ -146,10 +187,7 @@
     };
 
     document.querySelectorAll('iframe.lightbox_iframe').forEach(attach);
-    new MutationObserver(() => document.querySelectorAll('iframe.lightbox_iframe').forEach(attach)).observe(
-      document.body,
-      { childList: true, subtree: true },
-    );
+    onBodyChange(() => document.querySelectorAll('iframe.lightbox_iframe').forEach(attach));
     log('Watching lightbox windows');
   }
 
@@ -715,7 +753,7 @@
       );
       if (!rows.length) return {};
 
-      const vehicles = await fetch('/api/vehicles', { credentials: 'include', cache: 'no-store' }).then((r) => r.json());
+      const vehicles = await fetchJson('/api/vehicles');
       const alreadyQueued = new Set(vehicles.filter((v) => v.queued_mission_id).map((v) => String(v.id)));
 
       // Planned events (e.g. "Open dag") last for hours: don't queue behind those
@@ -1550,7 +1588,21 @@
         throw e;
       }));
 
-  const fetchJson = (url) => fetch(url, { credentials: 'include', cache: 'no-store' }).then((r) => r.json());
+  // Panels ask for /api/buildings and /api/vehicles many times at once: share one response for 3 s.
+  // Pass { fresh: true } right after an action (move, buy, build) to see its result.
+  const jsonCache = new Map();
+  const fetchJson = (url, { fresh = false } = {}) => {
+    const hit = jsonCache.get(url);
+    if (!fresh && hit && Date.now() - hit.ts < 3000) return hit.promise;
+    const promise = fetch(url, { credentials: 'include', cache: 'no-store' })
+      .then((r) => r.json())
+      .catch((e) => {
+        jsonCache.delete(url);
+        throw e;
+      });
+    jsonCache.set(url, { ts: Date.now(), promise });
+    return promise;
+  };
   const fetchDoc = async (url) =>
     new DOMParser().parseFromString(await fetch(url, { credentials: 'include' }).then((r) => r.text()), 'text/html');
 
@@ -1565,7 +1617,7 @@
       }
     };
     check();
-    new MutationObserver(check).observe(document.body, { childList: true, subtree: true });
+    onBodyChange(check);
   }
 
   async function enhanceBuildForm(form) {
@@ -1711,7 +1763,7 @@
       storage.set('pending_hire', null); // too old, give up
       return true;
     }
-    const buildings = await fetchJson('/api/buildings');
+    const buildings = await fetchJson('/api/buildings', { fresh: true });
     const building = buildings.find((b) => (b.caption || '').trim() === pending.name);
     if (!building) return false;
 
@@ -1875,7 +1927,7 @@
         if (!pending) return;
         if (Date.now() - pending.ts > 10 * 60e3) return storage.set('pending_rename', null);
 
-        const vehicles = await fetchJson('/api/vehicles');
+        const vehicles = await fetchJson('/api/vehicles', { fresh: true });
         const bought = vehicles.find(
           (v) =>
             String(v.building_id) === pending.buildingId &&
@@ -3753,7 +3805,7 @@ ${rows
   /** Moves a vehicle with the game's own "Hierheen verplaatsen" link and checks the result. */
   async function moveVehicle(vehicleId, targetBuildingId) {
     await fetch(`/vehicles/${vehicleId}/move/do/${targetBuildingId}`, { credentials: 'include' });
-    const moved = (await fetchJson('/api/vehicles')).find((v) => v.id === vehicleId);
+    const moved = (await fetchJson('/api/vehicles', { fresh: true })).find((v) => v.id === vehicleId);
     log(`Moved ${vehicleId} → ${targetBuildingId}`, moved?.building_id === targetBuildingId);
     if (moved?.building_id !== targetBuildingId) throw new Error('verplaatsen niet gelukt (voertuig onderweg of post vol?)');
     return true;

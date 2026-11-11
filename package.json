@@ -1,0 +1,12 @@
+{
+  "name": "meldkamerspel-script",
+  "private": true,
+  "description": "Tampermonkey userscript for meldkamerspel.com",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node build.mjs && node --check meldkamerspel.user.js && node tests/boot.cjs"
+  },
+  "devDependencies": {
+    "jsdom": "^24.0.0"
+  }
+}
