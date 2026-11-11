@@ -195,12 +195,15 @@
 
         body.innerHTML = '';
         body.append(
+          section('🎯 Prioriteiten, teamhulp & vergeten voertuigen', await renderPriorities(), true),
           section('📋 Taken', renderTasks(tasks), false),
           section('👥 Werving', renderHiring(fireStations), false),
           section('🧭 Ontwikkelplan (incl. personeel)', await renderPlan(balance), true),
           section('🔀 Herverdelen: voertuigen & personeel', await renderRedistribution(), true),
           section('📚 Inzetgeheugen per melding', await renderMissionMemory(), false),
           section('🗺️ VRU-voortgang', renderProgress(fireStations, buildings, vehicles), false),
+          section('📈 Rapport', await renderReport(balance, fireStations.length), false),
+          section('⚙️ Instellingen', renderSettings(), false),
         );
         updateBadge();
       } catch (e) {

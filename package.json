@@ -4,7 +4,7 @@
   "description": "Tampermonkey userscript for meldkamerspel.com",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node build.mjs && node --check meldkamerspel.user.js && node tests/boot.cjs"
+    "test": "node build.mjs && node --check meldkamerspel.user.js && node tests/boot.cjs && node tests/extras.cjs"
   },
   "devDependencies": {
     "jsdom": "^24.0.0"

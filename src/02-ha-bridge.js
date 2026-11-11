@@ -55,7 +55,8 @@
         const panel = entry.querySelector(`#mission_panel_${id}`);
         const state = STATES.find((s) => panel?.classList.contains(`mission_panel_${s}`)) || 'red';
         const missing = !!entry.querySelector(`#mission_missing_${id}`)?.textContent.trim();
-        missions.set(id, { caption: caption || 'Melding', state, missing }); // existing state: no event
+        const typeId = entry.getAttribute('mission_type_id');
+        missions.set(id, { caption: caption || 'Melding', state, missing, typeId }); // existing state: no event
         if (CONFIG.autoReturnSurplus && state === 'green') scheduleSurplusCheck(id, 5000 + missions.size * 1500);
       });
 
@@ -72,7 +73,7 @@
       const state = STATES[m.vehicle_state] || 'red';
       const missing = !!m.missing_text;
       const known = missions.get(m.id);
-      missions.set(m.id, { caption: m.caption, state, missing });
+      missions.set(m.id, { caption: m.caption, state, missing, typeId: m.mtid != null ? String(m.mtid) : known?.typeId });
       if (CONFIG.autoReturnSurplus && state === 'green') scheduleSurplusCheck(m.id);
 
       // "Missende voertuigen" just appeared
@@ -98,6 +99,8 @@
     wrap('missionDelete', (id) => {
       id = parseInt(id, 10);
       finalizeMissionMemory(id);
+      const done = missions.get(id);
+      if (done) recordCompletion(done.typeId);
       const known = missions.get(id);
       if (!known) return; // alliance or unknown mission
 

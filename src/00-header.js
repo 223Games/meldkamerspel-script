@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.1.0
+// @version      7.2.0
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -70,6 +70,21 @@
 
   const log = (...args) => CONFIG.debug && console.log('[MKS→HA]', ...args);
 
+  /** On/off switches (Tampermonkey storage, per browser). `needsReload`: only read when the page starts. */
+  const SETTINGS = [
+    { key: 'dispatchAssist', label: 'Alarmeerhulp in meldingsvenster', def: true, needsReload: true },
+    { key: 'queueBusyVehicles', label: 'Dooralarmeren bij tekort', def: true, needsReload: true },
+    { key: 'autoReturnSurplus', label: 'Overbodige voertuigen terugsturen', def: true, needsReload: true },
+    { key: 'coverageMap', label: 'Dekkingskaart (vrije TS per post)', def: true },
+    { key: 'stuckWarnings', label: 'Waarschuwing vergeten voertuigen', def: true },
+    { key: 'autoClaimTasks', label: 'Taken automatisch claimen', def: false },
+    { key: 'autoHire', label: 'Werving automatisch verlengen bij tekort', def: false },
+    { key: 'sendCompleted', label: 'HA: melding afgerond', def: true, needsReload: true },
+    { key: 'sendMissing', label: 'HA: missende voertuigen', def: true, needsReload: true },
+    { key: 'debug', label: 'Debug-log in console', def: false, needsReload: true },
+  ];
+  const setting = (key) => GM_getValue(`opt_${key}`, SETTINGS.find((s) => s.key === key)?.def ?? false);
+
   const isMainPage = !!document.getElementById('mission_list');
 
   /** Tampermonkey menu: set the personal Home Assistant values once (stored per browser). */
@@ -84,19 +99,11 @@
       window.alert('Opgeslagen. Herlaad de pagina.');
     });
 
-    // On/off switches, stored per browser (Tampermonkey menu)
-    const TOGGLES = [
-      ['dispatchAssist', 'Alarmeerhulp'],
-      ['queueBusyVehicles', 'Dooralarmeren bij tekort'],
-      ['autoReturnSurplus', 'Overbodige voertuigen terugsturen'],
-      ['sendCompleted', 'HA: melding afgerond'],
-      ['sendMissing', 'HA: missende voertuigen'],
-      ['debug', 'Debug-log in console'],
-    ];
-    TOGGLES.forEach(([key, label]) =>
-      GM_registerMenuCommand(`${CONFIG[key] ? '✅' : '⬜'} ${label}`, () => {
-        GM_setValue(`opt_${key}`, !CONFIG[key]);
-        window.alert(`${label} ${CONFIG[key] ? 'uit' : 'aan'}gezet. Herlaad de pagina.`);
+    // On/off switches, stored per browser (also in the VRU panel under ⚙️ Instellingen)
+    SETTINGS.forEach(({ key, label }) =>
+      GM_registerMenuCommand(`${setting(key) ? '✅' : '⬜'} ${label}`, () => {
+        GM_setValue(`opt_${key}`, !setting(key));
+        window.alert(`${label} ${setting(key) ? 'aan' : 'uit'}gezet. Herlaad de pagina.`);
       })
     );
   }
@@ -138,6 +145,7 @@
         if (CONFIG.vru.panel) initPanel();
         if (CONFIG.vru.personnelPanel) initPersonnelPanel();
       }
+      startExtras();
     }
     // Page opened directly (or Tampermonkey injected into the frame)
     initPage(document);
