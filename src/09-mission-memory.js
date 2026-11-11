@@ -189,8 +189,10 @@
     return data;
   }
 
-  // Extra AAOs for mobile, on top of "1. TS" … "12. Groot + HOvD". Keys = AAO form fields.
+  // Extra AAOs for mobile, on top of "2. 2 TS" … "12. Groot + HOvD". Keys = AAO form fields.
+  // "1. TS" is included: it was missing in the live account, so small missions got a bigger proposal.
   const EXTRA_AAOS = [
+    { caption: '1. TS', color: '43a047', v: { fire: 1 } },
     { caption: '13. TS + OvD', color: '43a047', v: { fire: 1, elw: 1 } },
     { caption: '14. 3 TS', color: 'e53935', v: { fire: 3 } },
     { caption: '15. Zeer grote brand (4 TS, AL, OvD, WT)', color: 'b71c1c', v: { fire: 4, dlk: 1, elw: 1, gwl2wasser: 1 } },

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.2.1
+// @version      7.2.2
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
