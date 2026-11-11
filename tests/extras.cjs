@@ -57,6 +57,17 @@ setTimeout(() => {
     report: /Vandaag/.test(text) && /Brand B 1×/.test(text),
     settings: w.document.querySelectorAll('[id^="mks-set-"]').length > 5,
     coverageMap: markers.length === 1 && /1\/2 TS vrij/.test(markers[0].t),
+    allCollapsed: [...w.document.querySelectorAll('details')].every((d) => !d.open),
+    // 2 own missions + 1 team mission + 1 stuck vehicle = 4 actions, shown on the collapsed header
+    priorityBadge: (() => {
+      const d = [...w.document.querySelectorAll('details')].find((x) => /Prioriteiten/.test(x.querySelector('summary').textContent));
+      const b = d?.querySelector('.mks-act');
+      return b?.textContent === '4' && b.style.display !== 'none';
+    })(),
+    hiringBadge: (() => {
+      const d = [...w.document.querySelectorAll('details')].find((x) => /Werving/.test(x.querySelector('summary').textContent));
+      return d?.querySelector('.mks-act')?.textContent === '1';
+    })(),
   };
   const ownErrors = errors.filter((e) => /Priorities|Report|Extras|Panel failed/.test(e));
   console.log(checks, ownErrors.length ? ownErrors : 'no errors in new sections');

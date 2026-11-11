@@ -312,6 +312,7 @@
 
           const row = document.createElement('div');
           row.style.cssText = `display:flex;justify-content:space-between;gap:6px;margin-bottom:6px;${canNow ? '' : 'opacity:.75'}`;
+          row.dataset.mksStep = canNow ? 'now' : 'later'; // counted in the collapsed section header
           row.innerHTML = `<span>${i + 1}. ${title}<br><small class="text-muted">${formatCredits(step.cost)} · totaal ${formatCredits(cumulative)}${
             canNow ? ' · <span class="text-success">kan nu</span>' : ''
           }</small><br><small>${detail}</small></span>`;

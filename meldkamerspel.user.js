@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.2.2
+// @version      7.3.0
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -2209,16 +2209,27 @@
         const balance = credits.credits_user_current;
 
         body.innerHTML = '';
+        // All sections start collapsed; the counters show what is waiting inside (they follow the async content)
+        const buttons = (c, test) => [...c.querySelectorAll('a.btn')].filter((a) => test(a.textContent.trim()));
         body.append(
-          section('🎯 Prioriteiten, teamhulp & vergeten voertuigen', await renderPriorities(), true),
-          section('📋 Taken', renderTasks(tasks), false),
-          section('👥 Werving', renderHiring(fireStations), false),
-          section('🧭 Ontwikkelplan (incl. personeel)', await renderPlan(balance), true),
-          section('🔀 Herverdelen: voertuigen & personeel', await renderRedistribution(), true),
-          section('📚 Inzetgeheugen per melding', await renderMissionMemory(), false),
-          section('🗺️ VRU-voortgang', renderProgress(fireStations, buildings, vehicles), false),
-          section('📈 Rapport', await renderReport(balance, fireStations.length), false),
-          section('⚙️ Instellingen', renderSettings(), false),
+          section('🎯 Prioriteiten, teamhulp & vergeten voertuigen', await renderPriorities(), (c) => ({
+            act: buttons(c, (t) => t === 'Open' || t === 'Voertuig').length,
+          })),
+          section('📋 Taken', renderTasks(tasks), (c) => ({ act: buttons(c, (t) => t === 'Claim').length })),
+          section('👥 Werving', renderHiring(fireStations), (c) => ({ act: buttons(c, (t) => /^\d+ dagen werven$/.test(t)).length })),
+          section('🧭 Ontwikkelplan (incl. personeel)', await renderPlan(balance), (c) => ({
+            act: c.querySelectorAll('[data-mks-step="now"]').length,
+            opt: c.querySelectorAll('[data-mks-step="later"]').length,
+          })),
+          section('🔀 Herverdelen: voertuigen & personeel', await renderRedistribution(), (c) => ({
+            act: buttons(c, (t) => /^(Hernoem|Verplaats)/.test(t)).length,
+          })),
+          section('📚 Inzetgeheugen per melding', await renderMissionMemory()),
+          section('🗺️ VRU-voortgang', renderProgress(fireStations, buildings, vehicles), (c) => ({
+            opt: c.querySelectorAll('[data-mks-incomplete]').length,
+          })),
+          section('📈 Rapport', await renderReport(balance, fireStations.length)),
+          section('⚙️ Instellingen', renderSettings()),
         );
         updateBadge();
       } catch (e) {
@@ -2227,12 +2238,43 @@
       }
     }
 
-    function section(title, content, isOpen) {
+    /**
+     * Collapsible section, always collapsed at first. `count(content)` returns { act, opt }:
+     * act = things to do now (red badge), opt = possible next steps (grey badge).
+     * Recounted whenever the content changes (async loading, a button turning into ✓).
+     */
+    function section(title, content, count) {
       const details = document.createElement('details');
-      details.open = isOpen;
       details.style.marginBottom = '8px';
-      details.innerHTML = `<summary style="cursor:pointer;font-weight:bold;margin-bottom:4px">${title}</summary>`;
+      details.innerHTML = `<summary style="cursor:pointer;font-weight:bold;margin-bottom:4px">${title}
+        <span class="badge mks-act" style="display:none;background:#d9534f;margin-left:4px" title="Acties: nu te doen"></span>
+        <span class="badge mks-opt" style="display:none;margin-left:4px" title="Opties: mogelijke volgende stappen"></span></summary>`;
       details.append(content);
+      if (count) {
+        const act = details.querySelector('.mks-act');
+        const opt = details.querySelector('.mks-opt');
+        const show = (badge, n) => {
+          badge.textContent = n;
+          badge.style.display = n > 0 ? 'inline-block' : 'none';
+        };
+        let scheduled = false;
+        const update = () => {
+          scheduled = false;
+          try {
+            const r = count(content) || {};
+            show(act, r.act || 0);
+            show(opt, r.opt || 0);
+          } catch (e) {
+            console.error('[MKS→HA] Section count failed', title, e);
+          }
+        };
+        update();
+        new MutationObserver(() => {
+          if (scheduled) return;
+          scheduled = true;
+          requestAnimationFrame(update);
+        }).observe(content, { childList: true, subtree: true, characterData: true });
+      }
       return details;
     }
 
@@ -2377,7 +2419,7 @@
           const complete = !s.missing.length;
           list.append(
             el(
-              `<div style="margin-bottom:2px">${complete ? '✅' : '🟡'} 09-${s.code} ${escapeHtml(VRU_STATIONS[s.code][0])} <small class="text-muted">${
+              `<div style="margin-bottom:2px"${complete ? '' : ' data-mks-incomplete="1"'}>${complete ? '✅' : '🟡'} 09-${s.code} ${escapeHtml(VRU_STATIONS[s.code][0])} <small class="text-muted">${
                 s.ref.length - s.missing.length
               }/${s.ref.length}${complete ? '' : ` · mist ${s.missing.map(([n, t]) => `${n} ${labelOf(t)}`).join(', ')}`}</small></div>`
             )
@@ -3382,6 +3424,7 @@
 
           const row = document.createElement('div');
           row.style.cssText = `display:flex;justify-content:space-between;gap:6px;margin-bottom:6px;${canNow ? '' : 'opacity:.75'}`;
+          row.dataset.mksStep = canNow ? 'now' : 'later'; // counted in the collapsed section header
           row.innerHTML = `<span>${i + 1}. ${title}<br><small class="text-muted">${formatCredits(step.cost)} · totaal ${formatCredits(cumulative)}${
             canNow ? ' · <span class="text-success">kan nu</span>' : ''
           }</small><br><small>${detail}</small></span>`;
