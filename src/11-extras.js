@@ -194,28 +194,76 @@
 
   /* ---------- 4: coverage map ---------- */
 
-  let coverageLayer = null;
-  async function updateCoverageMap() {
-    const L = unsafeWindow.L;
+  /**
+   * The game draws its map with Apple MapKit (default, "map_kit") or Leaflet, per player setting.
+   * `map` is the provider's own map object in both cases; xy_map.mapProvider says which one.
+   */
+  function coverageMapKind() {
     const map = unsafeWindow.map;
-    if (!setting('coverageMap') || !L || !map?.addLayer) {
-      if (coverageLayer && map?.removeLayer) map.removeLayer(coverageLayer);
-      coverageLayer = null;
-      return;
+    if (unsafeWindow.mapkit && typeof map?.addOverlays === 'function' && typeof map?.addAnnotations === 'function') return 'mapkit';
+    if (unsafeWindow.L && typeof map?.addLayer === 'function') return 'leaflet';
+    return null;
+  }
+
+  let coverage = null; // { kind, layer } (Leaflet) or { kind, overlays, annotations } (MapKit)
+  function clearCoverage() {
+    const map = unsafeWindow.map;
+    if (coverage?.kind === 'leaflet') map?.removeLayer?.(coverage.layer);
+    if (coverage?.kind === 'mapkit') {
+      map?.removeOverlays?.(coverage.overlays);
+      map?.removeAnnotations?.(coverage.annotations);
     }
+    coverage = null;
+  }
+
+  async function updateCoverageMap() {
+    const kind = coverageMapKind();
+    if (!setting('coverageMap') || !kind) return clearCoverage();
     const [buildings, vehicles] = await Promise.all([fetchJson('/api/buildings'), fetchJson('/api/vehicles')]);
-    if (!coverageLayer) coverageLayer = L.layerGroup().addTo(map);
-    coverageLayer.clearLayers();
-    buildings
+    const stations = buildings
       .filter((b) => b.building_type === 0)
-      .forEach((b) => {
+      .map((b) => {
         const engines = vehicles.filter((v) => v.building_id === b.id && isFireEngine(v.vehicle_type));
         const free = engines.filter((v) => FREE_FMS.has(v.fms_real)).length;
-        const color = free === 0 ? '#d32f2f' : free < engines.length ? '#f9a825' : '#2e7d32';
-        L.circleMarker([b.latitude, b.longitude], { radius: 9, color, weight: 3, fillOpacity: 0.15, interactive: true })
-          .bindTooltip(`${b.caption.trim()}: ${free}/${engines.length} TS vrij`)
-          .addTo(coverageLayer);
+        const color = !engines.length ? '#757575' : free === 0 ? '#d32f2f' : free < engines.length ? '#f9a825' : '#2e7d32';
+        return { b, free, total: engines.length, color, tip: `${b.caption.trim()}: ${free}/${engines.length} TS vrij` };
       });
+    clearCoverage();
+    const map = unsafeWindow.map;
+
+    if (kind === 'leaflet') {
+      const L = unsafeWindow.L;
+      const layer = L.layerGroup().addTo(map);
+      stations.forEach((s) =>
+        L.circleMarker([s.b.latitude, s.b.longitude], { radius: 9, color: s.color, weight: 3, fillOpacity: 0.15, interactive: true })
+          .bindTooltip(s.tip)
+          .addTo(layer)
+      );
+      coverage = { kind, layer };
+      return;
+    }
+
+    // MapKit: a ring around the station (drawn below the game's icons) plus a "free/total" badge
+    const mk = unsafeWindow.mapkit;
+    const overlays = [];
+    const annotations = [];
+    stations.forEach((s) => {
+      const at = new mk.Coordinate(s.b.latitude, s.b.longitude);
+      overlays.push(
+        new mk.CircleOverlay(at, 900, {
+          enabled: false,
+          style: new mk.Style({ strokeColor: s.color, lineWidth: 3, fillColor: s.color, fillOpacity: 0.15 }),
+        })
+      );
+      const badge = document.createElement('div');
+      badge.textContent = `${s.free}/${s.total}`;
+      badge.title = s.tip;
+      badge.style.cssText = `font:bold 11px/1 sans-serif;color:#fff;background:${s.color};border-radius:8px;padding:2px 5px;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.4)`;
+      annotations.push(new mk.Annotation(at, () => badge, { enabled: false, anchorOffset: new DOMPoint(22, -22), displayPriority: 1000 }));
+    });
+    map.addOverlays(overlays);
+    map.addAnnotations(annotations);
+    coverage = { kind, overlays, annotations };
   }
 
   /* ---------- 5: report ---------- */

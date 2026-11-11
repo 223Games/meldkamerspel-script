@@ -37,9 +37,18 @@
     const { missing, unknown } = vehicleMissing ? parseMissingVehicles(vehicleMissing.textContent) : { missing: {}, unknown: [] };
     if (unknown.length) return log('Surplus check: unknown missing items, leaving vehicles', missionId, unknown);
 
-    const seconds = (row) => {
+    // Arrival time: the row holds no countdown text, only registerVehicleTimer(vehicleId, startMs, arrivalMs)
+    const arrival = (row) => {
+      const timer = row.textContent.match(/registerVehicleTimer\(\s*\d+\s*,\s*\d+\s*,\s*(\d+)\s*\)/);
+      if (timer) return +timer[1];
       const m = row.textContent.match(/(\d+):(\d{2}):(\d{2})/);
-      return m ? +m[1] * 3600 + +m[2] * 60 + +m[3] : 99999;
+      return m ? Date.now() + (+m[1] * 3600 + +m[2] * 60 + +m[3]) * 1000 : Infinity;
+    };
+    // Shared missions list other players' vehicles too: only ever touch our own
+    const ownUserId = String(unsafeWindow.user_id || '');
+    const isOwn = (row) => {
+      const profile = row.querySelector('a[href^="/profile/"]')?.getAttribute('href');
+      return !profile || !ownUserId || profile === `/profile/${ownUserId}`;
     };
     const categoryOf = (row) => {
       const caption = (row.querySelector('small.vehicle_caption, small')?.textContent || '').replace(/[()]/g, '').trim();
@@ -53,14 +62,15 @@
     const stillNeeded = { ...missing };
     const surplus = [];
     rows
-      .sort((a, b) => seconds(a) - seconds(b))
+      .sort((a, b) => arrival(a) - arrival(b))
       .forEach((row) => {
         const key = categoryOf(row);
         if (!key && Object.keys(missing).length) return; // unrecognised vehicle while something is missing: keep
         if (key && stillNeeded[key] > 0) {
-          stillNeeded[key] -= 1;
+          stillNeeded[key] -= 1; // a teammate's vehicle arriving first also fills the gap
           return;
         }
+        if (!isOwn(row)) return;
         const link = backLink(row);
         if (link) surplus.push({ row, link });
       });
@@ -70,7 +80,8 @@
     const returned = [];
     for (const { row, link } of surplus) {
       const method = (link.getAttribute('data-method') || 'get').toUpperCase();
-      const res = await fetch(link.getAttribute('href'), {
+      // Same call as the game's own button: return=mission_js answers with a small script instead of the whole page
+      const res = await fetch(link.getAttribute('href').replace('return=mission&', 'return=mission_js&'), {
         method,
         credentials: 'include',
         headers: { 'X-CSRF-Token': csrf, 'X-Requested-With': 'XMLHttpRequest' },

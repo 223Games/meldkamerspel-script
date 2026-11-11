@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.2.0
+// @version      7.2.1
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -363,9 +363,18 @@
     const { missing, unknown } = vehicleMissing ? parseMissingVehicles(vehicleMissing.textContent) : { missing: {}, unknown: [] };
     if (unknown.length) return log('Surplus check: unknown missing items, leaving vehicles', missionId, unknown);
 
-    const seconds = (row) => {
+    // Arrival time: the row holds no countdown text, only registerVehicleTimer(vehicleId, startMs, arrivalMs)
+    const arrival = (row) => {
+      const timer = row.textContent.match(/registerVehicleTimer\(\s*\d+\s*,\s*\d+\s*,\s*(\d+)\s*\)/);
+      if (timer) return +timer[1];
       const m = row.textContent.match(/(\d+):(\d{2}):(\d{2})/);
-      return m ? +m[1] * 3600 + +m[2] * 60 + +m[3] : 99999;
+      return m ? Date.now() + (+m[1] * 3600 + +m[2] * 60 + +m[3]) * 1000 : Infinity;
+    };
+    // Shared missions list other players' vehicles too: only ever touch our own
+    const ownUserId = String(unsafeWindow.user_id || '');
+    const isOwn = (row) => {
+      const profile = row.querySelector('a[href^="/profile/"]')?.getAttribute('href');
+      return !profile || !ownUserId || profile === `/profile/${ownUserId}`;
     };
     const categoryOf = (row) => {
       const caption = (row.querySelector('small.vehicle_caption, small')?.textContent || '').replace(/[()]/g, '').trim();
@@ -379,14 +388,15 @@
     const stillNeeded = { ...missing };
     const surplus = [];
     rows
-      .sort((a, b) => seconds(a) - seconds(b))
+      .sort((a, b) => arrival(a) - arrival(b))
       .forEach((row) => {
         const key = categoryOf(row);
         if (!key && Object.keys(missing).length) return; // unrecognised vehicle while something is missing: keep
         if (key && stillNeeded[key] > 0) {
-          stillNeeded[key] -= 1;
+          stillNeeded[key] -= 1; // a teammate's vehicle arriving first also fills the gap
           return;
         }
+        if (!isOwn(row)) return;
         const link = backLink(row);
         if (link) surplus.push({ row, link });
       });
@@ -396,7 +406,8 @@
     const returned = [];
     for (const { row, link } of surplus) {
       const method = (link.getAttribute('data-method') || 'get').toUpperCase();
-      const res = await fetch(link.getAttribute('href'), {
+      // Same call as the game's own button: return=mission_js answers with a small script instead of the whole page
+      const res = await fetch(link.getAttribute('href').replace('return=mission&', 'return=mission_js&'), {
         method,
         credentials: 'include',
         headers: { 'X-CSRF-Token': csrf, 'X-Requested-With': 'XMLHttpRequest' },
@@ -4250,28 +4261,76 @@ ${rows
 
   /* ---------- 4: coverage map ---------- */
 
-  let coverageLayer = null;
-  async function updateCoverageMap() {
-    const L = unsafeWindow.L;
+  /**
+   * The game draws its map with Apple MapKit (default, "map_kit") or Leaflet, per player setting.
+   * `map` is the provider's own map object in both cases; xy_map.mapProvider says which one.
+   */
+  function coverageMapKind() {
     const map = unsafeWindow.map;
-    if (!setting('coverageMap') || !L || !map?.addLayer) {
-      if (coverageLayer && map?.removeLayer) map.removeLayer(coverageLayer);
-      coverageLayer = null;
-      return;
+    if (unsafeWindow.mapkit && typeof map?.addOverlays === 'function' && typeof map?.addAnnotations === 'function') return 'mapkit';
+    if (unsafeWindow.L && typeof map?.addLayer === 'function') return 'leaflet';
+    return null;
+  }
+
+  let coverage = null; // { kind, layer } (Leaflet) or { kind, overlays, annotations } (MapKit)
+  function clearCoverage() {
+    const map = unsafeWindow.map;
+    if (coverage?.kind === 'leaflet') map?.removeLayer?.(coverage.layer);
+    if (coverage?.kind === 'mapkit') {
+      map?.removeOverlays?.(coverage.overlays);
+      map?.removeAnnotations?.(coverage.annotations);
     }
+    coverage = null;
+  }
+
+  async function updateCoverageMap() {
+    const kind = coverageMapKind();
+    if (!setting('coverageMap') || !kind) return clearCoverage();
     const [buildings, vehicles] = await Promise.all([fetchJson('/api/buildings'), fetchJson('/api/vehicles')]);
-    if (!coverageLayer) coverageLayer = L.layerGroup().addTo(map);
-    coverageLayer.clearLayers();
-    buildings
+    const stations = buildings
       .filter((b) => b.building_type === 0)
-      .forEach((b) => {
+      .map((b) => {
         const engines = vehicles.filter((v) => v.building_id === b.id && isFireEngine(v.vehicle_type));
         const free = engines.filter((v) => FREE_FMS.has(v.fms_real)).length;
-        const color = free === 0 ? '#d32f2f' : free < engines.length ? '#f9a825' : '#2e7d32';
-        L.circleMarker([b.latitude, b.longitude], { radius: 9, color, weight: 3, fillOpacity: 0.15, interactive: true })
-          .bindTooltip(`${b.caption.trim()}: ${free}/${engines.length} TS vrij`)
-          .addTo(coverageLayer);
+        const color = !engines.length ? '#757575' : free === 0 ? '#d32f2f' : free < engines.length ? '#f9a825' : '#2e7d32';
+        return { b, free, total: engines.length, color, tip: `${b.caption.trim()}: ${free}/${engines.length} TS vrij` };
       });
+    clearCoverage();
+    const map = unsafeWindow.map;
+
+    if (kind === 'leaflet') {
+      const L = unsafeWindow.L;
+      const layer = L.layerGroup().addTo(map);
+      stations.forEach((s) =>
+        L.circleMarker([s.b.latitude, s.b.longitude], { radius: 9, color: s.color, weight: 3, fillOpacity: 0.15, interactive: true })
+          .bindTooltip(s.tip)
+          .addTo(layer)
+      );
+      coverage = { kind, layer };
+      return;
+    }
+
+    // MapKit: a ring around the station (drawn below the game's icons) plus a "free/total" badge
+    const mk = unsafeWindow.mapkit;
+    const overlays = [];
+    const annotations = [];
+    stations.forEach((s) => {
+      const at = new mk.Coordinate(s.b.latitude, s.b.longitude);
+      overlays.push(
+        new mk.CircleOverlay(at, 900, {
+          enabled: false,
+          style: new mk.Style({ strokeColor: s.color, lineWidth: 3, fillColor: s.color, fillOpacity: 0.15 }),
+        })
+      );
+      const badge = document.createElement('div');
+      badge.textContent = `${s.free}/${s.total}`;
+      badge.title = s.tip;
+      badge.style.cssText = `font:bold 11px/1 sans-serif;color:#fff;background:${s.color};border-radius:8px;padding:2px 5px;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.4)`;
+      annotations.push(new mk.Annotation(at, () => badge, { enabled: false, anchorOffset: new DOMPoint(22, -22), displayPriority: 1000 }));
+    });
+    map.addOverlays(overlays);
+    map.addAnnotations(annotations);
+    coverage = { kind, overlays, annotations };
   }
 
   /* ---------- 5: report ---------- */
