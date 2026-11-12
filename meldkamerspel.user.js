@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.3.0
+// @version      7.3.1
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -376,13 +376,12 @@
       const profile = row.querySelector('a[href^="/profile/"]')?.getAttribute('href');
       return !profile || !ownUserId || profile === `/profile/${ownUserId}`;
     };
-    const categoryOf = (row) => {
-      const caption = (row.querySelector('small.vehicle_caption, small')?.textContent || '').replace(/[()]/g, '').trim();
-      return Object.keys(DISPATCH_CATEGORIES).find((k) => DISPATCH_CATEGORIES[k].caption.test(caption)) || null;
-    };
+    // Only the real "Retour post" link: queued rows start with "Direct naar deze inzet vertrekken" (also backalarm),
+    // which would pull the vehicle away from the mission it is busy with
     const backLink = (row) =>
-      row.querySelector('a[href*="backalarm"]') ||
-      [...row.querySelectorAll('a, button')].find((el) => /retour\s*post|terug/i.test(el.textContent) && el.getAttribute('href'));
+      [...row.querySelectorAll('a[href*="backalarm"]')].find(
+        (a) => /retour\s*post/i.test(a.textContent) && !/next_mission=/.test(a.getAttribute('href'))
+      ) || null;
 
     // First-arriving vehicles fill what is still missing; the rest is surplus
     const stillNeeded = { ...missing };
@@ -390,13 +389,14 @@
     rows
       .sort((a, b) => arrival(a) - arrival(b))
       .forEach((row) => {
-        const key = categoryOf(row);
+        const key = assignedRowCategory(row);
         if (!key && Object.keys(missing).length) return; // unrecognised vehicle while something is missing: keep
         if (key && stillNeeded[key] > 0) {
           stillNeeded[key] -= 1; // a teammate's vehicle arriving first also fills the gap
           return;
         }
         if (!isOwn(row)) return;
+        if (isQueuedRow(row)) return; // queued vehicle (busy elsewhere): never touched, the player decides
         const link = backLink(row);
         if (link) surplus.push({ row, link });
       });
@@ -539,6 +539,32 @@
     return cat.caption.test(row.getAttribute('vehicle_type') || '') || (!!cat.typeIds && cat.typeIds.includes(typeId));
   }
 
+  /**
+   * Type caption ("TS 6/7", "WT") of a row in "Voertuigen zijn onderweg" / "ter plaatse".
+   * Normal rows use <small class="vehicle_caption">, but rows of vehicles queued for this mission
+   * (busy elsewhere, coming next) have a plain <small> — without this they were not counted at all.
+   */
+  function assignedRowCaption(row) {
+    const small =
+      row.querySelector('small.vehicle_caption') ||
+      [...row.querySelectorAll('small')].find((s) => !s.classList.contains('visible-xs') && /\(/.test(s.textContent));
+    return (small?.textContent || '').replace(/[()]/g, '').trim();
+  }
+
+  /** Dispatch category of an assigned vehicle row (caption first, vehicle type id as fallback). */
+  function assignedRowCategory(row) {
+    const caption = assignedRowCaption(row);
+    const typeId = row.querySelector('a[vehicle_type_id]')?.getAttribute('vehicle_type_id');
+    return (
+      Object.keys(DISPATCH_CATEGORIES).find(
+        (k) => DISPATCH_CATEGORIES[k].caption.test(caption) || !!DISPATCH_CATEGORIES[k].typeIds?.includes(typeId)
+      ) || null
+    );
+  }
+
+  /** Row in "onderweg" of a vehicle queued for this mission: no drive timer, still busy at its current mission. */
+  const isQueuedRow = (row) => !/registerVehicleTimer/.test(row.textContent) && !!row.querySelector('a[href*="next_mission="]');
+
   /** Parses a "Missende voertuigen: 1 Tankautospuit, 2 …" text into counts per category. */
   function parseMissingVehicles(rawText) {
     const text = String(rawText || '').replace(/\u00a0/g, ' ').replace(/^.*?:/, '');
@@ -623,8 +649,14 @@
       return data;
     }
 
-    function captionOfAssignedRow(row) {
-      return (row.querySelector('small.vehicle_caption')?.textContent || '').replace(/[()]/g, '').trim();
+    /** Counts assigned vehicle rows (driving, queued, on scene) per category. */
+    function countRows(rows) {
+      const counts = {};
+      rows.forEach((row) => {
+        const key = assignedRowCategory(row);
+        if (key) counts[key] = (counts[key] || 0) + 1;
+      });
+      return counts;
     }
 
     function countByCategory(captions) {
@@ -646,17 +678,22 @@
     }
 
     async function calculateNeeded(typeId) {
-      const driving = countByCategory(
-        [...doc.querySelectorAll('#mission_vehicle_driving tbody tr')].map(captionOfAssignedRow),
-      );
-      const atMission = countByCategory(
-        [...doc.querySelectorAll('#mission_vehicle_at_mission tbody tr')].map(captionOfAssignedRow),
-      );
+      // "driving" includes vehicles queued for this mission: they come for sure, just later
+      const drivingRows = [...doc.querySelectorAll('#mission_vehicle_driving tbody tr')];
+      const driving = countRows(drivingRows);
+      const atMission = countRows([...doc.querySelectorAll('#mission_vehicle_at_mission tbody tr')]);
 
       const needed = {};
       const notOwned = [];
       const info = [];
-      const enRoute = {}; // "missing" per the game, but already driving there
+      const enRoute = {}; // "missing" per the game, but already driving or queued there
+      const queuedHere = countRows(drivingRows.filter(isQueuedRow));
+      if (Object.keys(queuedHere).length)
+        info.push(
+          `<b>In wachtrij hierheen</b> (meegeteld): ${Object.entries(queuedHere)
+            .map(([k, n]) => `${n}× ${CATEGORIES[k].label}`)
+            .join(', ')}`
+        );
 
       // Other requirement types (water, personnel, …) shown by the game
       doc.querySelectorAll('#missing_text [data-requirement-type]').forEach((el) => {
@@ -916,12 +953,13 @@
 
     /** Counts per category: assigned (driving + on scene), selected, and what the game says is missing. */
     function snapshotWindow(typeId) {
-      const assigned = [...doc.querySelectorAll('#mission_vehicle_driving tbody tr, #mission_vehicle_at_mission tbody tr')].map(captionOfAssignedRow);
+      const assigned = countRows([...doc.querySelectorAll('#mission_vehicle_driving tbody tr, #mission_vehicle_at_mission tbody tr')]);
       const selectedCaptions = [...doc.querySelectorAll('#mission-form .vehicle_checkbox:checked')].map(
         (c) => c.closest('tr')?.getAttribute('vehicle_type') || ''
       );
-      const used = countByCategory([...assigned, ...selectedCaptions]);
-      const atMission = countByCategory([...doc.querySelectorAll('#mission_vehicle_at_mission tbody tr')].map(captionOfAssignedRow));
+      const used = countByCategory(selectedCaptions);
+      Object.entries(assigned).forEach(([k, n]) => (used[k] = (used[k] || 0) + n));
+      const atMission = countRows([...doc.querySelectorAll('#mission_vehicle_at_mission tbody tr')]);
       const missing = parseMissingText()?.missing || {};
       // What the game required in total = on scene + still missing (only for categories it reports missing)
       const required = Object.fromEntries(Object.entries(missing).map(([k, n]) => [k, n + (atMission[k] || 0)]));

@@ -50,13 +50,12 @@
       const profile = row.querySelector('a[href^="/profile/"]')?.getAttribute('href');
       return !profile || !ownUserId || profile === `/profile/${ownUserId}`;
     };
-    const categoryOf = (row) => {
-      const caption = (row.querySelector('small.vehicle_caption, small')?.textContent || '').replace(/[()]/g, '').trim();
-      return Object.keys(DISPATCH_CATEGORIES).find((k) => DISPATCH_CATEGORIES[k].caption.test(caption)) || null;
-    };
+    // Only the real "Retour post" link: queued rows start with "Direct naar deze inzet vertrekken" (also backalarm),
+    // which would pull the vehicle away from the mission it is busy with
     const backLink = (row) =>
-      row.querySelector('a[href*="backalarm"]') ||
-      [...row.querySelectorAll('a, button')].find((el) => /retour\s*post|terug/i.test(el.textContent) && el.getAttribute('href'));
+      [...row.querySelectorAll('a[href*="backalarm"]')].find(
+        (a) => /retour\s*post/i.test(a.textContent) && !/next_mission=/.test(a.getAttribute('href'))
+      ) || null;
 
     // First-arriving vehicles fill what is still missing; the rest is surplus
     const stillNeeded = { ...missing };
@@ -64,13 +63,14 @@
     rows
       .sort((a, b) => arrival(a) - arrival(b))
       .forEach((row) => {
-        const key = categoryOf(row);
+        const key = assignedRowCategory(row);
         if (!key && Object.keys(missing).length) return; // unrecognised vehicle while something is missing: keep
         if (key && stillNeeded[key] > 0) {
           stillNeeded[key] -= 1; // a teammate's vehicle arriving first also fills the gap
           return;
         }
         if (!isOwn(row)) return;
+        if (isQueuedRow(row)) return; // queued vehicle (busy elsewhere): never touched, the player decides
         const link = backLink(row);
         if (link) surplus.push({ row, link });
       });
