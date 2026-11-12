@@ -49,6 +49,7 @@ w.fetch = async (url) => {
   requested.push(String(url));
   if (String(url).startsWith('/api/buildings')) return { ok: true, json: async () => [{ id: 100, building_type: 0, caption: 'BRW 09-01 Test', latitude: 52.1, longitude: 5.4 }] };
   if (String(url).startsWith('/api/vehicles')) return { ok: true, json: async () => [{ id: 1, building_id: 100, vehicle_type: 17, fms_real: 2 }, { id: 2, building_id: 100, vehicle_type: 17, fms_real: 3 }] };
+  if (String(url).startsWith('/vehicles/21')) return { ok: true, text: async () => '<html><body>type TS 6/7 Water 2000 l Pomp Capaciteit 1500 l/min</body></html>' };
   if (String(url).startsWith('/missions/77')) return { ok: true, json: async () => ({}), text: async () => queuedMissionHtml };
   return { ok: true, json: async () => ({}), text: async () => missionHtml };
 };
@@ -89,6 +90,26 @@ w.eval('const GM_getValue=window.GM_getValue,GM_setValue=window.GM_setValue,GM_r
   await new Promise((r) => setTimeout(r, 1500));
   const selectedTs = win.querySelectorAll('.vehicle_checkbox:checked').length;
   const panelText = win.querySelector('.alert')?.textContent || '';
+  // Water case as seen live ("Brand in rietenkap"): 5000 l needed, game bar says 2000 l driving,
+  // a queued TS (2000 l) is not in the game's bar. Only ~1000 l is really missing → one TS, not TS + WT.
+  const waterWin = new JSDOM(`<a id="mission_help" href="/einsaetze/2"></a><h1 id="missionH1">Brand in rietenkap</h1>
+    <div data-need_water="5000"></div><div class="mission_water_bar_at_mission_88" data-water-has="0"></div>
+    <div class="mission_water_bar_driving_88" data-water-has="2000"></div>
+    <table id="mission_vehicle_at_mission"><tbody></tbody></table>
+    <table id="mission_vehicle_driving"><tbody>
+      <tr><td><a href="/vehicles/20" vehicle_type_id="17">BRW 09-4431 TS</a><small class="vehicle_caption">(TS 6/7)</small></td><td><script>registerVehicleTimer(20, 1, 9)</script></td></tr>
+      ${queuedRow(21, 17, 'BRW 09-5034 TS')}
+    </tbody></table>
+    <form id="mission-form"><table><tbody id="vehicle_show_table_body_all">
+      <tr class="vehicle_select_table_tr" vehicle_type="TS 6/7" data-distance="1"><td><input type="checkbox" class="vehicle_checkbox" vehicle_type_id="9" wasser_amount="2000" value="41"></td></tr>
+      <tr class="vehicle_select_table_tr" vehicle_type="WT" data-distance="2"><td><input type="checkbox" class="vehicle_checkbox" vehicle_type_id="34" wasser_amount="3000" value="42"></td></tr>
+    </tbody></table></form>`, { url: 'https://www.meldkamerspel.com/missions/88' }).window.document;
+  w.localStorage.setItem('mks_ha_mission_types_v1', JSON.stringify({ ts: Date.now(), data: { 2: { r: { firetrucks: 1, water_needed: 5000 }, c: {} } } }));
+  w.__mks.initDispatchAssistant(waterWin);
+  await new Promise((r) => setTimeout(r, 1500));
+  const waterSelected = [...waterWin.querySelectorAll('.vehicle_checkbox:checked')].map((c) => c.value);
+  const waterText = waterWin.querySelector('.alert')?.textContent || '';
+
   const checks = {
     mapkitRing: added.overlays.length === 1 && added.overlays[0].o.style.strokeColor === '#f9a825',
     mapkitBadge: added.annotations.length === 1 && added.annotations[0].el.textContent === '1/2',
@@ -96,9 +117,11 @@ w.eval('const GM_getValue=window.GM_getValue,GM_setValue=window.GM_setValue,GM_r
     returnsOnlyLaterOwnTs: backCalls.length === 1 && backCalls[0].startsWith('/vehicles/11/'),
     usesMissionJs: backCalls.every((u) => u.includes('return=mission_js')),
     queuedNeverReturned: queuedBackCalls === 0,
+    queuedWaterCounted: waterSelected.join() === '41' && /incl\. 2\.000 l in wachtrij/.test(waterText),
     queuedCountedInWindow: selectedTs === 0 && /In wachtrij hierheen/.test(panelText) && /2× TS/.test(panelText),
   };
   console.log(checks, errors.length ? errors : 'no errors');
+  if (!checks.queuedWaterCounted) console.log('water selected', waterSelected, 'panel:', waterText);
   if (!checks.queuedCountedInWindow) console.log('selected', selectedTs, 'panel:', panelText);
   process.exit(Object.values(checks).every(Boolean) && !errors.length ? 0 : 1);
 })();

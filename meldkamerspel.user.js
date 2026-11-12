@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.3.1
+// @version      7.3.2
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -562,6 +562,9 @@
     );
   }
 
+  /** Water/pump per vehicle id, read from its vehicle page (stable per vehicle, so cached for the session). */
+  const vehicleCapacityCache = new Map();
+
   /** Row in "onderweg" of a vehicle queued for this mission: no drive timer, still busy at its current mission. */
   const isQueuedRow = (row) => !/registerVehicleTimer/.test(row.textContent) && !!row.querySelector('a[href*="next_mission="]');
 
@@ -874,9 +877,30 @@
           pump: num(c.getAttribute('water_damage_pump_value')),
         };
       });
-      const assignedTypeIds = [...doc.querySelectorAll('#mission_vehicle_driving tbody tr, #mission_vehicle_at_mission tbody tr')]
-        .map((row) => row.querySelector('a[vehicle_type_id]')?.getAttribute('vehicle_type_id'))
-        .filter(Boolean);
+      const assignedRows = [...doc.querySelectorAll('#mission_vehicle_driving tbody tr, #mission_vehicle_at_mission tbody tr')];
+      /**
+       * Water/pump of an assigned vehicle. From the free-vehicle list when that type is in it; otherwise
+       * (all of that type busy) from the vehicle's own page — before, such vehicles counted as 0.
+       */
+      const capacityOf = (row) => {
+        const typeId = row.querySelector('a[vehicle_type_id]')?.getAttribute('vehicle_type_id');
+        if (typeId && typeId in capacity) return Promise.resolve(capacity[typeId]);
+        const id = row.querySelector('a[href^="/vehicles/"]')?.getAttribute('href').split('/')[2];
+        if (!id) return Promise.resolve({ water: 0, pump: 0 });
+        if (!vehicleCapacityCache.has(id)) {
+          vehicleCapacityCache.set(
+            id,
+            fetchDoc(`/vehicles/${id}`)
+              .then((page) => {
+                const text = page.body.textContent.replace(/\s+/g, ' ');
+                const value = (re) => num((text.match(re)?.[1] || '').replace(/\./g, ''));
+                return { water: value(/\bWater\s+([\d.]+)\s*l\b/), pump: value(/Pomp\s*Capaciteit\s+([\d.]+)/i) };
+              })
+              .catch(() => ({ water: 0, pump: 0 }))
+          );
+        }
+        return vehicleCapacityCache.get(id);
+      };
 
       /** Selects the nearest free vehicles that add `attr` until `missing` is covered. */
       const topUp = (attr, missing) => {
@@ -897,7 +921,10 @@
       const waterNeeded = num(needBar?.dataset.need_water);
       if (waterNeeded > 0) {
         const barHas = (kind) => num(doc.querySelector(`[class*="mission_water_bar_${kind}_"]`)?.dataset.waterHas);
-        const present = barHas('at_mission') + barHas('driving');
+        // The game's bars leave out vehicles queued for this mission (live check, Nov 2026): add their water
+        const queuedRows = assignedRows.filter((row) => row.closest('#mission_vehicle_driving') && isQueuedRow(row));
+        const queuedWater = (await Promise.all(queuedRows.map(capacityOf))).reduce((s, c) => s + (c.water || 0), 0);
+        const present = barHas('at_mission') + barHas('driving') + queuedWater;
         let selectedWater = checkedBoxes().reduce((s, c) => s + num(c.getAttribute('wasser_amount')), 0);
         const missing = waterNeeded - present - selectedWater;
         if (missing > 0) selectedWater += topUp('wasser_amount', missing);
@@ -905,7 +932,9 @@
         const ok = total >= waterNeeded;
         lines.push({
           ok,
-          text: `<b>Water:</b> ${fmtNum(total)}/${fmtNum(waterNeeded)} l ${ok ? '✓' : '— niet genoeg beschikbaar'}`,
+          text: `<b>Water:</b> ${fmtNum(total)}/${fmtNum(waterNeeded)} l${
+            queuedWater ? ` (incl. ${fmtNum(queuedWater)} l in wachtrij)` : ''
+          } ${ok ? '✓' : '— niet genoeg beschikbaar'}`,
         });
       }
 
@@ -913,7 +942,7 @@
       const types = await loadMissionTypes();
       const pumpNeeded = num(types[typeId]?.r?.min_pump_speed);
       if (pumpNeeded > 0) {
-        const present = assignedTypeIds.reduce((s, t) => s + (capacity[t]?.pump || 0), 0);
+        const present = (await Promise.all(assignedRows.map(capacityOf))).reduce((s, c) => s + (c.pump || 0), 0);
         let selectedPump = checkedBoxes().reduce((s, c) => s + num(c.getAttribute('water_damage_pump_value')), 0);
         const missing = pumpNeeded - present - selectedPump;
         if (missing > 0) selectedPump += topUp('water_damage_pump_value', missing);
