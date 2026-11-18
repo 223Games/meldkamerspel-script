@@ -146,6 +146,10 @@
   // Requirement key (einsaetze.json) -> how to recognise it
   // caption: vehicle type caption in the vehicle tables, missing: name in "Missende voertuigen"
   const DISPATCH_CATEGORIES = {
+    // Nature fire vehicle (game key contains "brush"): TST-NB / NBV, type ids 12, 14, 15.
+    // First, so "Tankautospuit natuurbrand…" in a missing text isn't read as a plain TS.
+    // A TST-NB also counts as TS: assigned vehicles are counted for every category they match.
+    brush_trucks: { label: 'NB', caption: /(^|-)NBV?\b/i, typeIds: ['12', '14', '15'], missing: /natuurbrand|\bNBV?\b/i },
     firetrucks: { label: 'TS', caption: /^TST?(-NB)?\s*\d/i, missing: /Tankautospuit/i },
     platform_trucks: { label: 'AL/HW', caption: /^(AL|HW)$/i, missing: /Redvoertuig|Autoladder|Hoogwerker/i },
     mobile_command_vehicles: { label: 'HOvD', caption: /^DA-HOD$/i, missing: /Hoofd\s*Officier\s*van\s*Dienst|HOVD/i },
@@ -188,16 +192,23 @@
     return (small?.textContent || '').replace(/[()]/g, '').trim();
   }
 
-  /** Dispatch category of an assigned vehicle row (caption first, vehicle type id as fallback). */
-  function assignedRowCategory(row) {
+  /** All dispatch categories an assigned vehicle row counts for (a TST-NB is TS and NB). */
+  function assignedRowCategories(row) {
     const caption = assignedRowCaption(row);
     const typeId = row.querySelector('a[vehicle_type_id]')?.getAttribute('vehicle_type_id');
-    return (
-      Object.keys(DISPATCH_CATEGORIES).find(
-        (k) => DISPATCH_CATEGORIES[k].caption.test(caption) || !!DISPATCH_CATEGORIES[k].typeIds?.includes(typeId)
-      ) || null
+    return Object.keys(DISPATCH_CATEGORIES).filter(
+      (k) => DISPATCH_CATEGORIES[k].caption.test(caption) || !!DISPATCH_CATEGORIES[k].typeIds?.includes(typeId)
     );
   }
+
+  /** Main category of an assigned row (TS before NB, so a TST-NB is first of all a fire engine). */
+  function assignedRowCategory(row) {
+    const keys = assignedRowCategories(row);
+    return keys.find((k) => k !== 'brush_trucks') || keys[0] || null;
+  }
+
+  /** Requirement keys as the game names them → our category ("…brush…" = nature fire vehicle). */
+  const canonicalRequirementKey = (key) => (/brush/i.test(key) ? 'brush_trucks' : key);
 
   /** Water/pump per vehicle id, read from its vehicle page (stable per vehicle, so cached for the session). */
   const vehicleCapacityCache = new Map();
@@ -298,10 +309,7 @@
     /** Counts assigned vehicle rows (driving, queued, on scene) per category. */
     function countRows(rows) {
       const counts = {};
-      rows.forEach((row) => {
-        const key = assignedRowCategory(row);
-        if (key) counts[key] = (counts[key] || 0) + 1;
-      });
+      rows.forEach((row) => assignedRowCategories(row).forEach((key) => (counts[key] = (counts[key] || 0) + 1)));
       return counts;
     }
 
@@ -309,10 +317,7 @@
       const counts = {};
       captions.forEach((caption) => {
         for (const [key, cat] of Object.entries(CATEGORIES)) {
-          if (cat.caption.test(caption)) {
-            counts[key] = (counts[key] || 0) + 1;
-            break;
-          }
+          if (cat.caption.test(caption)) counts[key] = (counts[key] || 0) + 1;
         }
       });
       return counts;
@@ -365,9 +370,10 @@
         const type = types[typeId];
         if (!type) throw new Error(`meldingstype ${typeId} onbekend`);
 
-        for (const [key, count] of Object.entries(type.r)) {
-          if (NON_VEHICLE_KEYS.test(key)) continue;
-          const chance = type.c[key];
+        for (const [rawKey, count] of Object.entries(type.r)) {
+          if (NON_VEHICLE_KEYS.test(rawKey)) continue;
+          const key = canonicalRequirementKey(rawKey);
+          const chance = type.c[rawKey];
           if (chance !== undefined && chance < CONFIG.minChance) continue;
 
           if (!CATEGORIES[key]) {
@@ -418,9 +424,13 @@
 
       const selected = {};
       const short = {};
+      // A vehicle can count for several requirements (TST-NB = NB and TS): credit it to all of them
+      const credit = {};
+      // Most specific first: the NB requirement picks a TST-NB, which then also covers a TS
+      const order = Object.entries(needed).sort(([a], [b]) => (a === 'brush_trucks' ? -1 : b === 'brush_trucks' ? 1 : 0));
 
-      for (const [key, count] of Object.entries(needed)) {
-        let remaining = count;
+      for (const [key, count] of order) {
+        let remaining = count - (credit[key] || 0);
         for (const row of rows) {
           if (remaining <= 0) break;
           const checkbox = row.querySelector('.vehicle_checkbox');
@@ -430,6 +440,9 @@
           checkbox.click(); // click (not .checked) so the game updates its own counters
           remaining--;
           selected[key] = (selected[key] || 0) + 1;
+          Object.keys(needed).forEach((other) => {
+            if (other !== key && rowMatchesCategory(other, row)) credit[other] = (credit[other] || 0) + 1;
+          });
         }
         if (remaining > 0) short[key] = remaining;
       }

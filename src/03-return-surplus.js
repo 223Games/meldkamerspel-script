@@ -63,10 +63,12 @@
     rows
       .sort((a, b) => arrival(a) - arrival(b))
       .forEach((row) => {
-        const key = assignedRowCategory(row);
-        if (!key && Object.keys(missing).length) return; // unrecognised vehicle while something is missing: keep
-        if (key && stillNeeded[key] > 0) {
-          stillNeeded[key] -= 1; // a teammate's vehicle arriving first also fills the gap
+        const keys = assignedRowCategories(row);
+        if (!keys.length && Object.keys(missing).length) return; // unrecognised vehicle while something is missing: keep
+        // Fills every gap it counts for (a TST-NB covers a missing NB and a missing TS); also teammates' vehicles
+        const fills = keys.filter((k) => stillNeeded[k] > 0);
+        if (fills.length) {
+          fills.forEach((k) => (stillNeeded[k] -= 1));
           return;
         }
         if (!isOwn(row)) return;

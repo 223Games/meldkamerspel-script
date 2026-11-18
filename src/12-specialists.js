@@ -21,6 +21,8 @@
     { typeIds: [19], match: /hoofd\s*officier|\bHOvD\b/i, hq: true, real: 'HOvD West/Oost (hoofdkantoor)' },
     { typeIds: [56], match: /voorlicht|communicatie|\bVL\b/i, hq: true, real: 'Communicatieadviseur CoPI (hoofdkantoor)' },
     { typeIds: [68], match: /schuim/i, posts: ['18'], real: 'Schuimblusvoertuig' },
+    // "brush" = the game's key for nature fire vehicles (TST-NB / NBV)
+    { typeIds: [12, 14, 15], match: /brush|natuurbrand|\bNBV?\b/i, posts: ['01', '03', '07', '10', '22', '30', '31', '32', '33', '35', '50', '51', '52', '53', '54', '55', '64', '66'], real: 'Natuurbrandbestrijdingsvoertuig (NBV)' },
     { typeIds: [33], match: /waterongeval|duik/i, posts: ['01', '04', '13', '39', '44', '59'], real: 'Waterongevallen' },
   ];
 
@@ -142,8 +144,11 @@
       });
 
     list.forEach((sp) => {
-      const typeId = sp.shop?.typeId;
-      sp.ownedAt = typeId != null ? vehicles.filter((v) => v.vehicle_type === typeId).map((v) => stations.find((s) => s.id === v.building_id)).filter(Boolean) : [];
+      const vru = vruHomeOf(sp.name, sp.shop?.typeId);
+      if (vru && /brush/i.test(sp.name)) sp.name = 'NB (natuurbrandvoertuig, spelcode "brush")';
+      const typeId = sp.shop?.typeId ?? vru?.typeIds?.[0];
+      const typeIds = sp.shop?.typeId != null ? [sp.shop.typeId] : vru?.typeIds || [];
+      sp.ownedAt = vehicles.filter((v) => typeIds.includes(v.vehicle_type)).map((v) => stations.find((s) => s.id === v.building_id)).filter(Boolean);
       sp.home = specialistHome(sp, stations, data.stationRows);
       sp.allowed = !sp.shop?.minStations || sp.shop.minStations <= stations.length;
       const reg = register[sp.name] || { firstSeen: now };

@@ -5,7 +5,7 @@ const { JSDOM } = require('jsdom');
 const path = require('path');
 
 const code = require('fs').readFileSync(path.join(__dirname, '..', 'meldkamerspel.user.js'), 'utf8');
-const expose = 'window.__mks = { updateCoverageMap, returnSurplusVehicles, initDispatchAssistant };\n})();';
+const expose = 'window.__mks = { updateCoverageMap, returnSurplusVehicles, initDispatchAssistant, parseMissingVehicles };\n})();';
 const body = code.replace(/\n\s*boot\(\);\s*\n\}\)\(\);\s*$/, `\n${expose}`);
 if (body === code) throw new Error('footer not found');
 
@@ -110,7 +110,22 @@ w.eval('const GM_getValue=window.GM_getValue,GM_setValue=window.GM_setValue,GM_r
   const waterSelected = [...waterWin.querySelectorAll('.vehicle_checkbox:checked')].map((c) => c.value);
   const waterText = waterWin.querySelector('.alert')?.textContent || '';
 
+  // "brush" = nature fire vehicle: requirement brush + 1 TS, free TST-NB + TS → only the TST-NB (it covers both)
+  const brushWin = new JSDOM(`<a id="mission_help" href="/einsaetze/3"></a><h1 id="missionH1">Natuurbrand</h1>
+    <table id="mission_vehicle_at_mission"><tbody></tbody></table><table id="mission_vehicle_driving"><tbody></tbody></table>
+    <form id="mission-form"><table><tbody id="vehicle_show_table_body_all">
+      <tr class="vehicle_select_table_tr" vehicle_type="TS 6/7" data-distance="1"><td><input type="checkbox" class="vehicle_checkbox" vehicle_type_id="17" value="51"></td></tr>
+      <tr class="vehicle_select_table_tr" vehicle_type="TST-NB 6/7" data-distance="2"><td><input type="checkbox" class="vehicle_checkbox" vehicle_type_id="14" value="52"></td></tr>
+    </tbody></table></form>`, { url: 'https://www.meldkamerspel.com/missions/99' }).window.document;
+  w.localStorage.setItem('mks_ha_mission_types_v1', JSON.stringify({ ts: Date.now(), data: { 3: { r: { firetrucks: 1, brush_trucks: 1 }, c: {} } } }));
+  w.__mks.initDispatchAssistant(brushWin);
+  await new Promise((r) => setTimeout(r, 1500));
+  const brushSelected = [...brushWin.querySelectorAll('.vehicle_checkbox:checked')].map((c) => c.value);
+  const brushText = brushWin.querySelector('.alert')?.textContent || '';
+
   const checks = {
+    brushRecognised: brushSelected.join() === '52' && !/brush/.test(brushText),
+    natuurbrandMissingText: w.__mks.parseMissingVehicles('Missende voertuigen: 1 Natuurbrandbestrijdingsvoertuig, 2 Tankautospuiten').missing.brush_trucks === 1,
     mapkitRing: added.overlays.length === 1 && added.overlays[0].o.style.strokeColor === '#f9a825',
     mapkitBadge: added.annotations.length === 1 && added.annotations[0].el.textContent === '1/2',
     // TS 12 arrives first and fills the missing TS; TS 11 is surplus; team TS 13 is never touched
@@ -121,6 +136,7 @@ w.eval('const GM_getValue=window.GM_getValue,GM_setValue=window.GM_setValue,GM_r
     queuedCountedInWindow: selectedTs === 0 && /In wachtrij hierheen/.test(panelText) && /2× TS/.test(panelText),
   };
   console.log(checks, errors.length ? errors : 'no errors');
+  if (!checks.brushRecognised) console.log('brush selected', brushSelected, 'panel:', brushText);
   if (!checks.queuedWaterCounted) console.log('water selected', waterSelected, 'panel:', waterText);
   if (!checks.queuedCountedInWindow) console.log('selected', selectedTs, 'panel:', panelText);
   process.exit(Object.values(checks).every(Boolean) && !errors.length ? 0 : 1);

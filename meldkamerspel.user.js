@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.5.1
+// @version      7.5.2
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -389,10 +389,12 @@
     rows
       .sort((a, b) => arrival(a) - arrival(b))
       .forEach((row) => {
-        const key = assignedRowCategory(row);
-        if (!key && Object.keys(missing).length) return; // unrecognised vehicle while something is missing: keep
-        if (key && stillNeeded[key] > 0) {
-          stillNeeded[key] -= 1; // a teammate's vehicle arriving first also fills the gap
+        const keys = assignedRowCategories(row);
+        if (!keys.length && Object.keys(missing).length) return; // unrecognised vehicle while something is missing: keep
+        // Fills every gap it counts for (a TST-NB covers a missing NB and a missing TS); also teammates' vehicles
+        const fills = keys.filter((k) => stillNeeded[k] > 0);
+        if (fills.length) {
+          fills.forEach((k) => (stillNeeded[k] -= 1));
           return;
         }
         if (!isOwn(row)) return;
@@ -582,6 +584,10 @@
   // Requirement key (einsaetze.json) -> how to recognise it
   // caption: vehicle type caption in the vehicle tables, missing: name in "Missende voertuigen"
   const DISPATCH_CATEGORIES = {
+    // Nature fire vehicle (game key contains "brush"): TST-NB / NBV, type ids 12, 14, 15.
+    // First, so "Tankautospuit natuurbrand…" in a missing text isn't read as a plain TS.
+    // A TST-NB also counts as TS: assigned vehicles are counted for every category they match.
+    brush_trucks: { label: 'NB', caption: /(^|-)NBV?\b/i, typeIds: ['12', '14', '15'], missing: /natuurbrand|\bNBV?\b/i },
     firetrucks: { label: 'TS', caption: /^TST?(-NB)?\s*\d/i, missing: /Tankautospuit/i },
     platform_trucks: { label: 'AL/HW', caption: /^(AL|HW)$/i, missing: /Redvoertuig|Autoladder|Hoogwerker/i },
     mobile_command_vehicles: { label: 'HOvD', caption: /^DA-HOD$/i, missing: /Hoofd\s*Officier\s*van\s*Dienst|HOVD/i },
@@ -624,16 +630,23 @@
     return (small?.textContent || '').replace(/[()]/g, '').trim();
   }
 
-  /** Dispatch category of an assigned vehicle row (caption first, vehicle type id as fallback). */
-  function assignedRowCategory(row) {
+  /** All dispatch categories an assigned vehicle row counts for (a TST-NB is TS and NB). */
+  function assignedRowCategories(row) {
     const caption = assignedRowCaption(row);
     const typeId = row.querySelector('a[vehicle_type_id]')?.getAttribute('vehicle_type_id');
-    return (
-      Object.keys(DISPATCH_CATEGORIES).find(
-        (k) => DISPATCH_CATEGORIES[k].caption.test(caption) || !!DISPATCH_CATEGORIES[k].typeIds?.includes(typeId)
-      ) || null
+    return Object.keys(DISPATCH_CATEGORIES).filter(
+      (k) => DISPATCH_CATEGORIES[k].caption.test(caption) || !!DISPATCH_CATEGORIES[k].typeIds?.includes(typeId)
     );
   }
+
+  /** Main category of an assigned row (TS before NB, so a TST-NB is first of all a fire engine). */
+  function assignedRowCategory(row) {
+    const keys = assignedRowCategories(row);
+    return keys.find((k) => k !== 'brush_trucks') || keys[0] || null;
+  }
+
+  /** Requirement keys as the game names them → our category ("…brush…" = nature fire vehicle). */
+  const canonicalRequirementKey = (key) => (/brush/i.test(key) ? 'brush_trucks' : key);
 
   /** Water/pump per vehicle id, read from its vehicle page (stable per vehicle, so cached for the session). */
   const vehicleCapacityCache = new Map();
@@ -734,10 +747,7 @@
     /** Counts assigned vehicle rows (driving, queued, on scene) per category. */
     function countRows(rows) {
       const counts = {};
-      rows.forEach((row) => {
-        const key = assignedRowCategory(row);
-        if (key) counts[key] = (counts[key] || 0) + 1;
-      });
+      rows.forEach((row) => assignedRowCategories(row).forEach((key) => (counts[key] = (counts[key] || 0) + 1)));
       return counts;
     }
 
@@ -745,10 +755,7 @@
       const counts = {};
       captions.forEach((caption) => {
         for (const [key, cat] of Object.entries(CATEGORIES)) {
-          if (cat.caption.test(caption)) {
-            counts[key] = (counts[key] || 0) + 1;
-            break;
-          }
+          if (cat.caption.test(caption)) counts[key] = (counts[key] || 0) + 1;
         }
       });
       return counts;
@@ -801,9 +808,10 @@
         const type = types[typeId];
         if (!type) throw new Error(`meldingstype ${typeId} onbekend`);
 
-        for (const [key, count] of Object.entries(type.r)) {
-          if (NON_VEHICLE_KEYS.test(key)) continue;
-          const chance = type.c[key];
+        for (const [rawKey, count] of Object.entries(type.r)) {
+          if (NON_VEHICLE_KEYS.test(rawKey)) continue;
+          const key = canonicalRequirementKey(rawKey);
+          const chance = type.c[rawKey];
           if (chance !== undefined && chance < CONFIG.minChance) continue;
 
           if (!CATEGORIES[key]) {
@@ -854,9 +862,13 @@
 
       const selected = {};
       const short = {};
+      // A vehicle can count for several requirements (TST-NB = NB and TS): credit it to all of them
+      const credit = {};
+      // Most specific first: the NB requirement picks a TST-NB, which then also covers a TS
+      const order = Object.entries(needed).sort(([a], [b]) => (a === 'brush_trucks' ? -1 : b === 'brush_trucks' ? 1 : 0));
 
-      for (const [key, count] of Object.entries(needed)) {
-        let remaining = count;
+      for (const [key, count] of order) {
+        let remaining = count - (credit[key] || 0);
         for (const row of rows) {
           if (remaining <= 0) break;
           const checkbox = row.querySelector('.vehicle_checkbox');
@@ -866,6 +878,9 @@
           checkbox.click(); // click (not .checked) so the game updates its own counters
           remaining--;
           selected[key] = (selected[key] || 0) + 1;
+          Object.keys(needed).forEach((other) => {
+            if (other !== key && rowMatchesCategory(other, row)) credit[other] = (credit[other] || 0) + 1;
+          });
         }
         if (remaining > 0) short[key] = remaining;
       }
@@ -4801,6 +4816,8 @@ ${rows
     { typeIds: [19], match: /hoofd\s*officier|\bHOvD\b/i, hq: true, real: 'HOvD West/Oost (hoofdkantoor)' },
     { typeIds: [56], match: /voorlicht|communicatie|\bVL\b/i, hq: true, real: 'Communicatieadviseur CoPI (hoofdkantoor)' },
     { typeIds: [68], match: /schuim/i, posts: ['18'], real: 'Schuimblusvoertuig' },
+    // "brush" = the game's key for nature fire vehicles (TST-NB / NBV)
+    { typeIds: [12, 14, 15], match: /brush|natuurbrand|\bNBV?\b/i, posts: ['01', '03', '07', '10', '22', '30', '31', '32', '33', '35', '50', '51', '52', '53', '54', '55', '64', '66'], real: 'Natuurbrandbestrijdingsvoertuig (NBV)' },
     { typeIds: [33], match: /waterongeval|duik/i, posts: ['01', '04', '13', '39', '44', '59'], real: 'Waterongevallen' },
   ];
 
@@ -4922,8 +4939,11 @@ ${rows
       });
 
     list.forEach((sp) => {
-      const typeId = sp.shop?.typeId;
-      sp.ownedAt = typeId != null ? vehicles.filter((v) => v.vehicle_type === typeId).map((v) => stations.find((s) => s.id === v.building_id)).filter(Boolean) : [];
+      const vru = vruHomeOf(sp.name, sp.shop?.typeId);
+      if (vru && /brush/i.test(sp.name)) sp.name = 'NB (natuurbrandvoertuig, spelcode "brush")';
+      const typeId = sp.shop?.typeId ?? vru?.typeIds?.[0];
+      const typeIds = sp.shop?.typeId != null ? [sp.shop.typeId] : vru?.typeIds || [];
+      sp.ownedAt = vehicles.filter((v) => typeIds.includes(v.vehicle_type)).map((v) => stations.find((s) => s.id === v.building_id)).filter(Boolean);
       sp.home = specialistHome(sp, stations, data.stationRows);
       sp.allowed = !sp.shop?.minStations || sp.shop.minStations <= stations.length;
       const reg = register[sp.name] || { firstSeen: now };
