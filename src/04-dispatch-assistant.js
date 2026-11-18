@@ -69,8 +69,11 @@
   /** "1× DB-RI of RIA (40%)" → "DB-RI of RIA" */
   const notOwnedName = (item) => String(item).replace(/^\d+\s*×\s*/, '').replace(/\s*\(\d+%\)\s*$/, '').trim();
 
-  /** Per mission (once, highest count wins): names from "Missende voertuigen" or requirement keys you don't own. */
-  function recordNotOwned(missionId, items) {
+  /**
+   * Per mission (once, highest count wins): names from "Missende voertuigen" or requirement keys you don't own.
+   * `at` = mission location {lat, lng}: used to advise the home station closest to where you miss it.
+   */
+  function recordNotOwned(missionId, items, at = null) {
     if (!missionId || !items?.length) return;
     let entries;
     try {
@@ -84,7 +87,7 @@
       const name = notOwnedName(item);
       if (name) names[name] = Math.max(names[name] || 0, count);
     });
-    entries[missionId] = { ts: entries[missionId]?.ts || Date.now(), names };
+    entries[missionId] = { ts: entries[missionId]?.ts || Date.now(), names, at: at || entries[missionId]?.at || null };
     Object.keys(entries).forEach((id) => {
       if (Date.now() - entries[id].ts > NOT_OWNED_DAYS * 86400e3) delete entries[id];
     });
@@ -93,6 +96,26 @@
     } catch (e) {
       /* best-effort */
     }
+  }
+
+  /** Last 14 days per name: missions and where they were ({ name: { missions, at: [{lat, lng}] } }). */
+  function notOwnedDetails() {
+    let entries;
+    try {
+      entries = JSON.parse(localStorage.getItem(NOT_OWNED_KEY) || '{}');
+    } catch (e) {
+      return {};
+    }
+    const out = {};
+    Object.values(entries).forEach(({ ts, names, at }) => {
+      if (Date.now() - ts > NOT_OWNED_DAYS * 86400e3) return;
+      Object.keys(names || {}).forEach((name) => {
+        out[name] = out[name] || { missions: 0, at: [] };
+        out[name].missions += 1;
+        if (at) out[name].at.push(at);
+      });
+    });
+    return out;
   }
 
   /** Last 14 days: per name, in how many missions it was asked for while you had none. */
@@ -215,7 +238,11 @@
         const typeId = getMissionTypeId();
         const { needed, notOwned, info, enRoute, missed } = await calculateNeeded(typeId);
         // Feeds the development plan: what you keep missing because you don't have it at all
-        recordNotOwned((doc.location?.pathname || '').match(/\/missions\/(\d+)/)?.[1], missed);
+        const missionId = (doc.location?.pathname || '').match(/\/missions\/(\d+)/)?.[1];
+        const entry = missionId && document.getElementById(`mission_${missionId}`);
+        const lat = parseFloat(entry?.getAttribute('latitude'));
+        const lng = parseFloat(entry?.getAttribute('longitude'));
+        recordNotOwned(missionId, missed, Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null);
         const { selected, short } = selectVehicles(needed);
         if (Object.keys(short).length && (await loadMoreVehicles())) {
           // Far-away vehicles were not in the list yet: try again for what is still short

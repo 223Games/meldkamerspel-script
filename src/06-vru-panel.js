@@ -206,6 +206,10 @@
             act: c.querySelectorAll('[data-mks-step="now"]').length,
             opt: c.querySelectorAll('[data-mks-step="later"]').length,
           })),
+          section('🧑‍🚒 Specialisten: ontdekt & thuiskazerne', await renderSpecialists(), (c) => ({
+            act: c.querySelectorAll('[data-mks-specialist="act"]').length,
+            opt: c.querySelectorAll('[data-mks-specialist="opt"]').length,
+          })),
           section('🔀 Herverdelen: voertuigen & personeel', await renderRedistribution(), (c) => ({
             act: buttons(c, (t) => /^(Hernoem|Verplaats)/.test(t)).length,
           })),
