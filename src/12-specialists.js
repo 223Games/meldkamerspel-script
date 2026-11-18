@@ -5,6 +5,28 @@
 
   const SPECIALIST_REGISTER_KEY = 'mks_specialists_v1';
 
+  // VRU head office (Archimedeslaan, Utrecht): AGS, HOvD and the communication adviser are based here, not at a post
+  const VRU_HQ = { latitude: 52.0866, longitude: 5.1683 };
+
+  /**
+   * Where the real VRU keeps each specialist (Brandbase regio 09, Nov 2026). `posts` = station codes,
+   * `hq` = head office (the game needs a fire station: the own post closest to it).
+   */
+  const VRU_SPECIALIST_HOMES = [
+    { match: /riet|thatch|\bDB-RI\b|\bRIA\b/i, posts: ['06', '37', '58', '61'], real: 'Rietdak Brandbestrijdingsteamvoertuig' },
+    { match: /veetakel|livestock|\bDB-VI\b/i, posts: ['21', '23', '29'], real: 'Veetakel Installatie' },
+    { typeIds: [31], match: /commando|\bCO\b/i, posts: ['01', '18'], real: 'Commandovoertuig Multi CoPI' },
+    { typeIds: [5], match: /adembescherming|\bAB\b/i, posts: ['07', '44', '64'], real: 'Adembeschermingshaakarmbak' },
+    { typeIds: [24], match: /gevaarlijke\s*stoffen|\bAGS\b/i, hq: true, real: 'AGS West/Oost (hoofdkantoor)' },
+    { typeIds: [19], match: /hoofd\s*officier|\bHOvD\b/i, hq: true, real: 'HOvD West/Oost (hoofdkantoor)' },
+    { typeIds: [56], match: /voorlicht|communicatie|\bVL\b/i, hq: true, real: 'Communicatieadviseur CoPI (hoofdkantoor)' },
+    { typeIds: [68], match: /schuim/i, posts: ['18'], real: 'Schuimblusvoertuig' },
+    { typeIds: [33], match: /waterongeval|duik/i, posts: ['01', '04', '13', '39', '44', '59'], real: 'Waterongevallen' },
+  ];
+
+  const vruHomeOf = (name, typeId) =>
+    VRU_SPECIALIST_HOMES.find((h) => (typeId != null && h.typeIds?.includes(typeId)) || h.match.test(name)) || null;
+
   const readSpecialistRegister = () => {
     try {
       return JSON.parse(localStorage.getItem(SPECIALIST_REGISTER_KEY) || '{}');
@@ -22,27 +44,53 @@
 
   /**
    * Home station for a specialist:
-   * 1. fixed by the VRU reference (extension vehicles: rietkap 09-51, veetakels 09-62);
+   * 1. the real VRU posts (Brandbase): a built one, closest to where you missed it; head-office
+   *    specialists → your post closest to the head office; VRU posts not built yet → temporary home;
    * 2. otherwise the own station closest to where you missed it (average of those missions),
    *    preferring stations that already have people with the needed education;
    * 3. no locations yet: the station with trained people, else none.
    */
-  function specialistHome({ name, at = [], education }, stations, stationRows) {
-    const fixed = PLAN_EXTENSIONS.find((ext) => ext.match.test(name));
-    if (fixed) {
-      const station = stations.find((b) => new RegExp(`09-${fixed.station}\\b`).test(b.caption));
-      return { station, code: fixed.station, why: `VRU-indeling (uitbreiding ${fixed.name})`, extension: fixed };
+  function specialistHome({ name, at = [], education, shop }, stations, stationRows) {
+    const centre = at.length
+      ? { latitude: at.reduce((n, p) => n + p.lat, 0) / at.length, longitude: at.reduce((n, p) => n + p.lng, 0) / at.length }
+      : null;
+    const extension = PLAN_EXTENSIONS.find((ext) => ext.match.test(name)) || null;
+    const vru = vruHomeOf(name, shop?.typeId);
+    const short = (st) => st.caption.trim().replace(`${CONFIG.vru.prefix} `, '');
+    if (vru?.hq) {
+      const best = stations.map((st) => ({ st, km: distanceKm(VRU_HQ, st) })).sort((a, b) => a.km - b.km)[0];
+      if (best)
+        return { station: best.st, vru: true, extension, why: `VRU: ${vru.real}; jouw post het dichtst bij het hoofdkantoor (${best.km.toFixed(1)} km)` };
+    }
+    if (vru?.posts) {
+      const all = vru.posts.map((c) => `09-${c}`).join(', ');
+      const built = vru.posts.map((c) => stations.find((b) => new RegExp(`09-${c}\\b`).test(b.caption))).filter(Boolean);
+      if (built.length) {
+        // Several VRU posts built: the one closest to where you missed it
+        const pick = centre ? built.sort((a, b) => distanceKm(centre, a) - distanceKm(centre, b))[0] : built[0];
+        return {
+          station: pick,
+          vru: true,
+          extension,
+          why: `VRU: ${vru.real} op ${all}${built.length > 1 ? `; ${short(pick)} ligt het dichtst bij je gemiste meldingen` : ''}`,
+        };
+      }
+      // None of its VRU posts built yet: temporary home closest to where you missed it
+      const temp = centre && stations.map((st) => ({ st, km: distanceKm(centre, st) })).sort((a, b) => a.km - b.km)[0];
+      return {
+        station: temp?.st || null,
+        vru: false,
+        extension,
+        posts: vru.posts,
+        why: `VRU: ${vru.real} op ${all} (nog niet gebouwd)${temp ? `; tijdelijk ${short(temp.st)}, ${temp.km.toFixed(1)} km van je gemiste meldingen` : ''}`,
+      };
     }
     const trainedAt = (st) => {
       if (!education) return 0;
       const row = stationRows?.find((r) => r.station.id === st.id);
       return row?.perEducation?.[education] || 0;
     };
-    if (at.length) {
-      const centre = {
-        latitude: at.reduce((n, p) => n + p.lat, 0) / at.length,
-        longitude: at.reduce((n, p) => n + p.lng, 0) / at.length,
-      };
+    if (centre) {
       const ranked = stations
         .map((st) => ({ st, km: distanceKm(centre, st), trained: trainedAt(st) }))
         // A station with trained people within 5 km extra beats the closest one without
@@ -141,7 +189,7 @@
           if (sp.home.extension) facts.push(`eerst uitbreiding ${escapeHtml(sp.home.extension.name)} (${formatCredits(sp.home.extension.price)})`);
           const home = sp.home.station
             ? `🏠 <b>${short(sp.home.station.caption)}</b> <small class="text-muted">(${escapeHtml(sp.home.why)})</small>`
-            : `🏠 <small class="text-muted">${escapeHtml(sp.home.why)}${sp.home.code ? ` · 09-${sp.home.code} nog niet gebouwd` : ''}</small>`;
+            : `🏠 <small class="text-muted">${escapeHtml(sp.home.why)}</small>`;
           const have = owned
             ? `✅ ${owned}× in bezit: ${sp.ownedAt.map((s) => short(s.caption)).join(', ')}`
             : needsAction
@@ -171,7 +219,7 @@
         const foot = document.createElement('small');
         foot.className = 'text-muted';
         foot.textContent =
-          'Gemist = een melding vroeg erom terwijl je er geen had (alarmeerhulp, 14 dagen). Thuiskazerne: VRU-indeling waar bekend, anders de post het dichtst bij waar je hem miste.';
+          'Gemist = een melding vroeg erom terwijl je er geen had (alarmeerhulp, 14 dagen). Thuiskazerne: echte VRU-indeling (Brandbase regio 09), anders de post het dichtst bij waar je hem miste.';
         wrap.append(foot);
       } catch (e) {
         console.error('[MKS→HA] Specialists failed', e);

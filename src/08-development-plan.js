@@ -14,8 +14,9 @@
    */
   // `match`: recognises the extension's vehicle in "Missende voertuigen" texts / requirement keys you missed
   const PLAN_EXTENSIONS = [
-    { typeId: 26, key: 'thatched_fire', name: 'Rietkapbrandbestrijding', price: 150000, days: 5, vehicle: 'DB-RI of RIA', station: '51', match: /riet|thatch|\bDB-RI\b|\bRIA\b/i },
-    { typeId: 27, key: 'livestock_fire', name: 'Veetakels', price: 150000, days: 5, vehicle: 'DB-VI', station: '62', match: /veetakel|livestock|\bDB-VI\b/i },
+    // Real VRU posts (Brandbase regio 09, Nov 2026): Rietdak Brandbestrijdingsteamvoertuig / Veetakel Installatie
+    { typeId: 26, key: 'thatched_fire', name: 'Rietkapbrandbestrijding', price: 150000, days: 5, vehicle: 'DB-RI of RIA', stations: ['06', '37', '58', '61'], match: /riet|thatch|\bDB-RI\b|\bRIA\b/i },
+    { typeId: 27, key: 'livestock_fire', name: 'Veetakels', price: 150000, days: 5, vehicle: 'DB-VI', stations: ['21', '23', '29'], match: /veetakel|livestock|\bDB-VI\b/i },
   ];
 
   // Own fire academy: train specialists yourself instead of waiting for the team academy
@@ -169,8 +170,9 @@
         const missed = missesMatching(notOwned, ext.match);
         if ((!stats.count && !missed) || ext.planned) return;
         if (buildings.some((b) => (b.extensions || []).some((e) => e.type_id === ext.typeId))) return; // already built/being built
+        // A built VRU post of this extension; none built yet → least used station (note says where it belongs)
         const station =
-          sim.find((s) => s.code === ext.station) || [...sim].sort((a, b) => a.used - b.used)[0];
+          ext.stations.map((c) => sim.find((s) => s.code === c)).find(Boolean) || [...sim].sort((a, b) => a.used - b.used)[0];
         if (!station) return;
         const cost = ext.price + DEFAULT_VEHICLE_PRICE; // + its vehicle
         // Missions you actually get but can't finish weigh most: each one is lost credits
@@ -265,10 +267,10 @@
       const missed = missesMatching(notOwned, ext.match);
       if (ext.planned || (!stats.count && !missed)) return;
       if (buildings.some((b) => (b.extensions || []).some((e) => e.type_id === ext.typeId))) return;
-      const station = sim.find((x) => x.code === ext.station);
+      const station = ext.stations.map((c) => sim.find((x) => x.code === c)).find(Boolean);
       notes.push(
         `🧩 Later: <b>${escapeHtml(ext.name)}</b> (${formatCredits(ext.price)} + ${escapeHtml(ext.vehicle)}) op ${
-          station ? escapeHtml(station.station.caption.trim().replace(`${CONFIG.vru.prefix} `, '')) : `09-${ext.station}`
+          station ? escapeHtml(station.station.caption.trim().replace(`${CONFIG.vru.prefix} `, '')) : ext.stations.map((c) => `09-${c}`).join('/')
         } →${missed ? ` je miste hem ${missed}× (14 d)` : ''}${stats.count ? ` +${stats.count} meldingstypes, gem. ${formatCredits(stats.avgCredits)} cr` : ''}`
       );
     });
