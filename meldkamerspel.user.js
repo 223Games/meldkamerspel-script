@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.3.2
+// @version      7.4.0
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -497,6 +497,56 @@
     return stats;
   }
 
+  /* ---------- Not-owned log: vehicles missions asked for that you don't have at all ---------- */
+
+  const NOT_OWNED_KEY = 'mks_not_owned_v1';
+  const NOT_OWNED_DAYS = 14;
+
+  /** "1× DB-RI of RIA (40%)" → "DB-RI of RIA" */
+  const notOwnedName = (item) => String(item).replace(/^\d+\s*×\s*/, '').replace(/\s*\(\d+%\)\s*$/, '').trim();
+
+  /** Per mission (once, highest count wins): names from "Missende voertuigen" or requirement keys you don't own. */
+  function recordNotOwned(missionId, items) {
+    if (!missionId || !items?.length) return;
+    let entries;
+    try {
+      entries = JSON.parse(localStorage.getItem(NOT_OWNED_KEY) || '{}');
+    } catch (e) {
+      entries = {};
+    }
+    const names = { ...(entries[missionId]?.names || {}) };
+    items.forEach((item) => {
+      const count = parseInt(String(item).match(/^(\d+)/)?.[1] || '1', 10);
+      const name = notOwnedName(item);
+      if (name) names[name] = Math.max(names[name] || 0, count);
+    });
+    entries[missionId] = { ts: entries[missionId]?.ts || Date.now(), names };
+    Object.keys(entries).forEach((id) => {
+      if (Date.now() - entries[id].ts > NOT_OWNED_DAYS * 86400e3) delete entries[id];
+    });
+    try {
+      localStorage.setItem(NOT_OWNED_KEY, JSON.stringify(entries));
+    } catch (e) {
+      /* best-effort */
+    }
+  }
+
+  /** Last 14 days: per name, in how many missions it was asked for while you had none. */
+  function notOwnedStats() {
+    let entries;
+    try {
+      entries = JSON.parse(localStorage.getItem(NOT_OWNED_KEY) || '{}');
+    } catch (e) {
+      return {};
+    }
+    const stats = {};
+    Object.values(entries).forEach(({ ts, names }) => {
+      if (Date.now() - ts > NOT_OWNED_DAYS * 86400e3) return;
+      Object.keys(names || {}).forEach((name) => (stats[name] = (stats[name] || 0) + 1));
+    });
+    return stats;
+  }
+
   /** Extra plan weight per VRU label for kinds you were short of (capped so it can't drown out the rest). */
   function shortageWeights() {
     const weights = {};
@@ -599,7 +649,9 @@
       panel.setText('Alarmeerhulp: bezig…');
       try {
         const typeId = getMissionTypeId();
-        const { needed, notOwned, info, enRoute } = await calculateNeeded(typeId);
+        const { needed, notOwned, info, enRoute, missed } = await calculateNeeded(typeId);
+        // Feeds the development plan: what you keep missing because you don't have it at all
+        recordNotOwned((doc.location?.pathname || '').match(/\/missions\/(\d+)/)?.[1], missed);
         const { selected, short } = selectVehicles(needed);
         if (Object.keys(short).length && (await loadMoreVehicles())) {
           // Far-away vehicles were not in the list yet: try again for what is still short
@@ -688,6 +740,7 @@
 
       const needed = {};
       const notOwned = [];
+      const missed = []; // asked for, but you don't have that kind at all
       const info = [];
       const enRoute = {}; // "missing" per the game, but already driving or queued there
       const queuedHere = countRows(drivingRows.filter(isQueuedRow));
@@ -713,6 +766,7 @@
           if (covered) enRoute[key] = covered;
         }
         notOwned.push(...missingText.unknown);
+        missed.push(...missingText.unknown);
         log('Using missing text', missingText, 'driving', driving);
       } else {
         // New mission: use the mission type requirements
@@ -727,6 +781,7 @@
 
           if (!CATEGORIES[key]) {
             notOwned.push(`${count}× ${key}${chance !== undefined ? ` (${chance}%)` : ''}`);
+            if (chance === undefined) missed.push(`${count}× ${key}`); // only certain requirements count as a miss
             continue;
           }
           needed[key] = Math.max(0, count - (driving[key] || 0) - (atMission[key] || 0));
@@ -734,7 +789,7 @@
         log('Using requirements for type', typeId, type, '→', needed);
       }
 
-      return { needed, notOwned, info, enRoute };
+      return { needed, notOwned, info, enRoute, missed };
     }
 
     /**
@@ -3191,10 +3246,31 @@
    * Station extensions worth it for a fire-only player (the others only unlock missions that
    * also need police/ambulance buildings). Missions are counted live from einsaetze.json.
    */
+  // `match`: recognises the extension's vehicle in "Missende voertuigen" texts / requirement keys you missed
   const PLAN_EXTENSIONS = [
-    { typeId: 26, key: 'thatched_fire', name: 'Rietkapbrandbestrijding', price: 150000, days: 5, vehicle: 'DB-RI of RIA', station: '51' },
-    { typeId: 27, key: 'livestock_fire', name: 'Veetakels', price: 150000, days: 5, vehicle: 'DB-VI', station: '62' },
+    { typeId: 26, key: 'thatched_fire', name: 'Rietkapbrandbestrijding', price: 150000, days: 5, vehicle: 'DB-RI of RIA', station: '51', match: /riet|thatch|\bDB-RI\b|\bRIA\b/i },
+    { typeId: 27, key: 'livestock_fire', name: 'Veetakels', price: 150000, days: 5, vehicle: 'DB-VI', station: '62', match: /veetakel|livestock|\bDB-VI\b/i },
   ];
+
+  // Own fire academy: train specialists yourself instead of waiting for the team academy
+  const ACADEMY_PRICE = 500000;
+
+  /** Building type id of the fire academy, read from the build menu (cached 7 days). */
+  async function loadAcademyType() {
+    const cached = memRead('mks_academy_type_v1', null);
+    if (cached && Date.now() - cached.ts < 7 * 86400e3) return cached.data;
+    const doc = await fetchDoc('/buildings/new');
+    const option = [...doc.querySelectorAll('select[name="building[building_type]"] option')].find((o) =>
+      /academie|school|opleiding/i.test(o.textContent)
+    );
+    const data = option ? { typeId: Number(option.value), name: option.textContent.trim() } : null;
+    memWrite('mks_academy_type_v1', { ts: Date.now(), data });
+    return data;
+  }
+
+  /** Missions (last 14 days) that asked for something matching `re` while you had none. */
+  const missesMatching = (stats, re) =>
+    Object.entries(stats).reduce((n, [name, missions]) => (re.test(name) ? Math.max(n, missions) : n), 0);
 
   /** Mission types an extension unlocks (only fire prerequisites, within your station count), cached 24 h. */
   async function loadExtensionMissionStats(stationCount) {
@@ -3275,6 +3351,10 @@
       };
     };
 
+    const notOwned = notOwnedStats();
+    const academy = data.academy || null; // { typeId, name, owned }
+    const pendingTraining = specialtyRows.filter((sp) => sp.unlocked.length && !sp.owned && sp.info?.education && !sp.trained);
+
     const steps = [];
     const plannedSpecialties = new Set();
     const unbuilt = rankUnbuiltStations(buildings, data.vehicles).slice(0, 6);
@@ -3319,16 +3399,24 @@
 
       // 3. Station extensions that unlock new missions (own parking slot: no level needed)
       PLAN_EXTENSIONS.forEach((ext) => {
-        const stats = data.extensionStats?.[ext.key];
-        if (!stats?.count || ext.planned) return;
+        const stats = data.extensionStats?.[ext.key] || { count: 0, avgCredits: 0, names: [] };
+        const missed = missesMatching(notOwned, ext.match);
+        if ((!stats.count && !missed) || ext.planned) return;
         if (buildings.some((b) => (b.extensions || []).some((e) => e.type_id === ext.typeId))) return; // already built/being built
         const station =
           sim.find((s) => s.code === ext.station) || [...sim].sort((a, b) => a.used - b.used)[0];
         if (!station) return;
         const cost = ext.price + DEFAULT_VEHICLE_PRICE; // + its vehicle
-        const value = 6 + stats.count * 2.5 * Math.min(1.5, stats.avgCredits / 1500);
-        candidates.push({ kind: 'extension', ext, stats, s: station, cost, value });
+        // Missions you actually get but can't finish weigh most: each one is lost credits
+        const value = 6 + stats.count * 2.5 * Math.min(1.5, stats.avgCredits / 1500) + Math.min(40, missed * 4);
+        candidates.push({ kind: 'extension', ext, stats, missed, s: station, cost, value });
       });
+
+      // 3b. Own academy: when specialists wait for training (each one unlocks missions)
+      if (academy && !academy.owned && !academy.planned && pendingTraining.length) {
+        const unlocks = pendingTraining.reduce((n, sp) => n + sp.unlocked.length, 0);
+        candidates.push({ kind: 'academy', cost: ACADEMY_PRICE, value: 6 + unlocks * 2.5, trainings: pendingTraining });
+      }
 
       // 4. New stations (coverage), best-ranked first
       unbuilt.forEach((u, i) => {
@@ -3340,6 +3428,11 @@
       const pick = candidates.sort((a, b) => b.value / b.cost - a.value / a.cost)[0];
 
       // Apply to the simulation
+      if (pick.kind === 'academy') {
+        academy.planned = true;
+        steps.push({ ...pick, personnel: { ok: true, text: 'daarna zelf opleiden; cursisten komen van je eigen posten' } });
+        continue;
+      }
       if (pick.kind === 'extension') {
         pick.ext.planned = true;
         steps.push({ ...pick, personnel: { ok: true, text: `daarna ${pick.ext.vehicle} kopen (eigen parkeerplek)` } });
@@ -3402,16 +3495,39 @@
     );
     // Worthwhile extensions that did not make it into the top of the plan: still show them
     PLAN_EXTENSIONS.forEach((ext) => {
-      const stats = data.extensionStats?.[ext.key];
-      if (ext.planned || !stats?.count) return;
+      const stats = data.extensionStats?.[ext.key] || { count: 0, avgCredits: 0 };
+      const missed = missesMatching(notOwned, ext.match);
+      if (ext.planned || (!stats.count && !missed)) return;
       if (buildings.some((b) => (b.extensions || []).some((e) => e.type_id === ext.typeId))) return;
       const station = sim.find((x) => x.code === ext.station);
       notes.push(
         `🧩 Later: <b>${escapeHtml(ext.name)}</b> (${formatCredits(ext.price)} + ${escapeHtml(ext.vehicle)}) op ${
           station ? escapeHtml(station.station.caption.trim().replace(`${CONFIG.vru.prefix} `, '')) : `09-${ext.station}`
-        } → +${stats.count} meldingstypes, gem. ${formatCredits(stats.avgCredits)} cr`
+        } →${missed ? ` je miste hem ${missed}× (14 d)` : ''}${stats.count ? ` +${stats.count} meldingstypes, gem. ${formatCredits(stats.avgCredits)} cr` : ''}`
       );
     });
+    // Everything else you keep missing (not solved by an extension): match it to the vehicle shop
+    const otherMisses = Object.entries(notOwned)
+      .filter(([name]) => !PLAN_EXTENSIONS.some((ext) => ext.match.test(name)))
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 6)
+      .map(([name, missions]) => {
+        const words = name.toLowerCase().split(/[^a-z0-9-]+/).filter((w) => w.length >= 3);
+        const shop = Object.values(data.typeInfo || {}).find((t) => words.some((w) => t.name?.toLowerCase().includes(w)));
+        const how = shop
+          ? ` → ${escapeHtml(shop.name)}${shop.education ? `, opleiding <i>${escapeHtml(shop.education)}</i>` : ''}${
+              shop.minStations ? `, vanaf ${shop.minStations} posten` : ''
+            }`
+          : '';
+        return `${escapeHtml(name)} ${missions}×${how}`;
+      });
+    if (otherMisses.length) notes.push(`🚫 Niet in je korps maar wel gevraagd (14 d): ${otherMisses.join(' · ')}`);
+    if (academy && !academy.owned && !academy.planned && pendingTraining.length)
+      notes.push(
+        `🎓 Eigen ${escapeHtml(academy.name)} (≈ ${formatCredits(ACADEMY_PRICE)}): dan train je ${pendingTraining
+          .map((sp) => escapeHtml(sp.info.education))
+          .join(', ')} zelf, zonder op de team-academie te wachten`
+      );
     PLAN_EXTENSIONS.forEach((ext) => delete ext.planned); // module-level list: reset for the next render
     return { steps, training, notes };
   }
@@ -3425,6 +3541,10 @@
         const [data, buildings] = await Promise.all([analysePersonnel(), fetchJson('/api/buildings')]);
         const stationCount = countFireStations(buildings);
         data.extensionStats = await loadExtensionMissionStats(stationCount).catch(() => ({}));
+        const academyType = await loadAcademyType().catch(() => null);
+        data.academy = academyType
+          ? { ...academyType, owned: buildings.some((b) => b.building_type === academyType.typeId) }
+          : null;
         const { steps, training, notes } = buildDevelopmentPlan(data, buildings);
         wrap.innerHTML = '';
 
@@ -3459,10 +3579,22 @@
           const buttons = [];
           if (step.kind === 'extension') {
             title = `🧩 <b>${short(step.s.station.caption)}</b>: uitbreiding <b>${escapeHtml(step.ext.name)}</b> (${step.ext.days} dagen)`;
-            detail = `+${step.stats.count} meldingstypes, gem. ${formatCredits(step.stats.avgCredits)} cr (${escapeHtml(
-              step.stats.names.slice(0, 3).join(', ')
-            )}…) · 👷 ${escapeHtml(step.personnel.text)}`;
+            const why = [];
+            if (step.missed) why.push(`<b>je miste hem ${step.missed}× in 14 dagen</b>`);
+            if (step.stats.count)
+              why.push(
+                `+${step.stats.count} meldingstypes, gem. ${formatCredits(step.stats.avgCredits)} cr (${escapeHtml(
+                  step.stats.names.slice(0, 3).join(', ')
+                )}…)`
+              );
+            detail = `${why.join(' · ')} · 👷 ${escapeHtml(step.personnel.text)}`;
             buttons.push(linkButton('Gebouw', open(`/buildings/${step.s.station.id}`)));
+          } else if (step.kind === 'academy') {
+            title = `🎓 Bouw een eigen <b>${escapeHtml(data.academy.name)}</b>`;
+            detail = `zelf opleiden: ${step.trainings
+              .map((sp) => `${escapeHtml(sp.info.education)} (${escapeHtml(sp.label)}, ${sp.unlocked.length} meldingstypes)`)
+              .join(', ')} · 👷 ${escapeHtml(step.personnel.text)}`;
+            buttons.push(linkButton('Bouwmenu', () => document.querySelector('a#build_new_building')?.click()));
           } else if (step.kind === 'station') {
             title = `🏗️ Bouw <b>09-${step.u.code} ${escapeHtml(step.u.name)}</b>`;
             detail = `brengt later ${step.u.specialists.length ? step.u.specialists.map(([, t]) => labelOf(t)).join(', ') : 'alleen TS'}`;

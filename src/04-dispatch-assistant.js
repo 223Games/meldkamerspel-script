@@ -61,6 +61,56 @@
     return stats;
   }
 
+  /* ---------- Not-owned log: vehicles missions asked for that you don't have at all ---------- */
+
+  const NOT_OWNED_KEY = 'mks_not_owned_v1';
+  const NOT_OWNED_DAYS = 14;
+
+  /** "1× DB-RI of RIA (40%)" → "DB-RI of RIA" */
+  const notOwnedName = (item) => String(item).replace(/^\d+\s*×\s*/, '').replace(/\s*\(\d+%\)\s*$/, '').trim();
+
+  /** Per mission (once, highest count wins): names from "Missende voertuigen" or requirement keys you don't own. */
+  function recordNotOwned(missionId, items) {
+    if (!missionId || !items?.length) return;
+    let entries;
+    try {
+      entries = JSON.parse(localStorage.getItem(NOT_OWNED_KEY) || '{}');
+    } catch (e) {
+      entries = {};
+    }
+    const names = { ...(entries[missionId]?.names || {}) };
+    items.forEach((item) => {
+      const count = parseInt(String(item).match(/^(\d+)/)?.[1] || '1', 10);
+      const name = notOwnedName(item);
+      if (name) names[name] = Math.max(names[name] || 0, count);
+    });
+    entries[missionId] = { ts: entries[missionId]?.ts || Date.now(), names };
+    Object.keys(entries).forEach((id) => {
+      if (Date.now() - entries[id].ts > NOT_OWNED_DAYS * 86400e3) delete entries[id];
+    });
+    try {
+      localStorage.setItem(NOT_OWNED_KEY, JSON.stringify(entries));
+    } catch (e) {
+      /* best-effort */
+    }
+  }
+
+  /** Last 14 days: per name, in how many missions it was asked for while you had none. */
+  function notOwnedStats() {
+    let entries;
+    try {
+      entries = JSON.parse(localStorage.getItem(NOT_OWNED_KEY) || '{}');
+    } catch (e) {
+      return {};
+    }
+    const stats = {};
+    Object.values(entries).forEach(({ ts, names }) => {
+      if (Date.now() - ts > NOT_OWNED_DAYS * 86400e3) return;
+      Object.keys(names || {}).forEach((name) => (stats[name] = (stats[name] || 0) + 1));
+    });
+    return stats;
+  }
+
   /** Extra plan weight per VRU label for kinds you were short of (capped so it can't drown out the rest). */
   function shortageWeights() {
     const weights = {};
@@ -163,7 +213,9 @@
       panel.setText('Alarmeerhulp: bezig…');
       try {
         const typeId = getMissionTypeId();
-        const { needed, notOwned, info, enRoute } = await calculateNeeded(typeId);
+        const { needed, notOwned, info, enRoute, missed } = await calculateNeeded(typeId);
+        // Feeds the development plan: what you keep missing because you don't have it at all
+        recordNotOwned((doc.location?.pathname || '').match(/\/missions\/(\d+)/)?.[1], missed);
         const { selected, short } = selectVehicles(needed);
         if (Object.keys(short).length && (await loadMoreVehicles())) {
           // Far-away vehicles were not in the list yet: try again for what is still short
@@ -252,6 +304,7 @@
 
       const needed = {};
       const notOwned = [];
+      const missed = []; // asked for, but you don't have that kind at all
       const info = [];
       const enRoute = {}; // "missing" per the game, but already driving or queued there
       const queuedHere = countRows(drivingRows.filter(isQueuedRow));
@@ -277,6 +330,7 @@
           if (covered) enRoute[key] = covered;
         }
         notOwned.push(...missingText.unknown);
+        missed.push(...missingText.unknown);
         log('Using missing text', missingText, 'driving', driving);
       } else {
         // New mission: use the mission type requirements
@@ -291,6 +345,7 @@
 
           if (!CATEGORIES[key]) {
             notOwned.push(`${count}× ${key}${chance !== undefined ? ` (${chance}%)` : ''}`);
+            if (chance === undefined) missed.push(`${count}× ${key}`); // only certain requirements count as a miss
             continue;
           }
           needed[key] = Math.max(0, count - (driving[key] || 0) - (atMission[key] || 0));
@@ -298,7 +353,7 @@
         log('Using requirements for type', typeId, type, '→', needed);
       }
 
-      return { needed, notOwned, info, enRoute };
+      return { needed, notOwned, info, enRoute, missed };
     }
 
     /**
