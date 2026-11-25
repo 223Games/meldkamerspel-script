@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.7.1
+// @version      7.7.2
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -74,7 +74,7 @@
   const SETTINGS = [
     { key: 'dispatchAssist', label: 'Alarmeerhulp in meldingsvenster', def: true, needsReload: true },
     { key: 'eventPriority', label: 'Evenementmeldingen bovenaan de prioriteiten en werklijst', def: true },
-    { key: 'worklist', label: 'Werklijst: "Alarmeren → volgende uit mijn lijst"', def: true },
+    { key: 'worklist', label: 'Werklijst: "Alarmeren → volgende uit mijn lijst"', def: false },
     { key: 'queueBusyVehicles', label: 'Dooralarmeren bij tekort', def: true, needsReload: true },
     { key: 'autoReturnSurplus', label: 'Overbodige voertuigen terugsturen', def: true, needsReload: true },
     { key: 'coverageMap', label: 'Dekkingskaart (vrije TS per post)', def: true },

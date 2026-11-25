@@ -72,7 +72,7 @@ w.map = {
 };
 w.DOMPoint = function (x, y) { Object.assign(this, { x, y }); };
 w.user_id = 1;
-Object.assign(w, { __gm: {}, GM_getValue: (k, d) => (k in w.__gm ? w.__gm[k] : d), GM_setValue: () => {}, GM_registerMenuCommand: () => {}, GM_xmlhttpRequest: () => {}, unsafeWindow: w });
+Object.assign(w, { __gm: { opt_worklist: true }, GM_getValue: (k, d) => (k in w.__gm ? w.__gm[k] : d), GM_setValue: () => {}, GM_registerMenuCommand: () => {}, GM_xmlhttpRequest: () => {}, unsafeWindow: w });
 w.eval('const GM_getValue=window.GM_getValue,GM_setValue=window.GM_setValue,GM_registerMenuCommand=window.GM_registerMenuCommand,GM_xmlhttpRequest=window.GM_xmlhttpRequest,unsafeWindow=window;' + body);
 
 (async () => {
