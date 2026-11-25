@@ -34,27 +34,32 @@
    * alarm-and-next submit; when the new window loads, it is redirected to the mission from your list.
    */
   async function addWorklistButton(doc) {
-    const gameNext = doc.querySelector('#mission-form .alert_next');
+    // The game has "Alarmeren en volgende" in the form and again in the fixed bar at the bottom
+    const gameNexts = [...doc.querySelectorAll('.alert_next')];
     const currentId = (doc.location.pathname.match(/\/missions\/(\d+)/) || [])[1];
-    if (!gameNext || !currentId || doc.getElementById('mks_worklist_btn')) return;
+    if (!gameNexts.length || !currentId || doc.documentElement.dataset.mksWorklist) return;
+    doc.documentElement.dataset.mksWorklist = '1';
     const next = await worklistNext(currentId);
     if (!next) return;
-    const btn = doc.createElement('a');
-    btn.id = 'mks_worklist_btn';
-    btn.href = '#';
-    btn.className = 'btn btn-primary';
-    btn.style.marginLeft = '4px';
-    btn.title = 'Alarmeren en daarna de volgende melding uit je eigen prioriteitenlijst openen';
-    btn.textContent = `▶ Alarmeren → ${next.caption}`;
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      const done = sessionRead(WORKLIST_DONE, {});
-      done[currentId] = Date.now();
-      sessionWrite(WORKLIST_DONE, done);
-      sessionWrite(WORKLIST_NEXT, { id: next.id, ts: Date.now() });
-      gameNext.click(); // the game's own alarm + next: same submit, same checks
+    gameNexts.forEach((gameNext, i) => {
+      const btn = doc.createElement('a');
+      if (i === 0) btn.id = 'mks_worklist_btn';
+      btn.href = '#';
+      btn.className = `btn btn-primary${gameNext.classList.contains('btn-xs') ? ' btn-xs' : gameNext.classList.contains('btn-sm') ? ' btn-sm' : ''}`;
+      btn.style.marginLeft = '4px';
+      btn.title = `Alarmeren en daarna de volgende melding uit je eigen prioriteitenlijst openen: ${next.caption}`;
+      // Full text in the form, short in the bottom bar (little room there)
+      btn.textContent = i === 0 ? `▶ Alarmeren → ${next.caption}` : '▶ mijn lijst';
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const done = sessionRead(WORKLIST_DONE, {});
+        done[currentId] = Date.now();
+        sessionWrite(WORKLIST_DONE, done);
+        sessionWrite(WORKLIST_NEXT, { id: next.id, ts: Date.now() });
+        gameNext.click(); // the game's own alarm + next: same submit, same checks
+      });
+      gameNext.after(btn);
     });
-    gameNext.after(btn);
   }
 
   /** On a new mission window: if the worklist asked for another mission, go there instead. */
