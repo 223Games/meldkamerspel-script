@@ -34,7 +34,7 @@ const specialists = [
 const queue = m.buildTrainingQueue(specialists, { academies: [{ running: [{ education: 'Specialist Rietdakbrandbestrijder', endsAt: expectedEnd }] }] });
 
 const withExt = m.buildTrainingQueue(specialists, { academies: [] }, [
-  { name: 'Veetakels', education: 'Veeredder', minCrew: 4, maxCrew: 6, count: 6, missed: 2 },
+  { name: 'Veetakels', education: 'Specialist Veetakel', minCrew: 4, maxCrew: 6, count: 6, missed: 2 },
   { name: 'Rietkap', education: 'Adviseur Gevaarlijke Stoffen', minCrew: 2, maxCrew: 4, count: 1, missed: 0 }, // already queued via AGS: no duplicate
 ]);
 const checks = {
