@@ -52,6 +52,11 @@ const offStation = { ...station, extensions: [{ type_id: 26, caption: 'Rietkapbr
 const offNotes = m.buildDevelopmentPlan(data, [offStation], 15).notes.join('\n');
 const offNotesTrained = m.buildDevelopmentPlan(trainedData, [offStation], 15).notes.join('\n');
 const noteText = plan.notes.join('\n');
+// Low-paying extension (veetakels, gem. 1.173 cr) ranks far below the same extension with good missions
+const livestock = (avg) =>
+  m.buildDevelopmentPlan({ ...data, extensionStats: { livestock_fire: { count: 6, avgCredits: avg, names: ['Schaap in sloot'] } } }, [station], 15).steps.find((s) => s.kind === 'extension' && s.ext.key === 'livestock_fire');
+const lowLivestock = livestock(1173);
+const goodLivestock = livestock(6000);
 
 // Specialists: register + home station
 const amersfoort = { id: 2, caption: 'BRW 09-01 Amersfoort Centrum', building_type: 0, latitude: 52.155, longitude: 5.388 };
@@ -81,6 +86,7 @@ const checks = {
   rietkapNeedsTraining: !!ext && ext.personnel.ok === false && /niemand opgeleid als Specialist Rietdakbrandbestrijder/.test(ext.personnel.text) && plan.training.some((t) => t.education === 'Specialist Rietdakbrandbestrijder'),
   rietkapReadyWhenTrained: !!trainedExt && trainedExt.personnel.ok === true && !trainedPlan.training.some((t) => t.education === 'Specialist Rietdakbrandbestrijder'),
   disabledNoteSaysTrainFirst: /niemand opgeleid als Specialist Rietdakbrandbestrijder/.test(offNotes) && !/bewust/.test(offNotes) && /bewust/.test(offNotesTrained),
+  lowYieldRankedLow: !!lowLivestock?.lowYield && !goodLivestock?.lowYield && (!lowLivestock || !goodLivestock || lowLivestock.value < goodLivestock.value / 3),
   otherMissesListed: /Voorlichter 2× → DA-VL Voorlichter, opleiding <i>Voorlichter<\/i>/.test(noteText),
 };
 console.log(checks);

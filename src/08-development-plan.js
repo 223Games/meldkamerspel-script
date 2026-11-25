@@ -21,6 +21,8 @@
 
   // Own fire academy: train specialists yourself instead of waiting for the team academy
   const ACADEMY_PRICE = 500000;
+  // Extensions whose missions pay less than this on average do not repay extension + vehicle + training: rank them low
+  const LOW_YIELD_CREDITS = 3000;
 
   /** Building type id of the fire academy, read from the build menu (cached 7 days). */
   async function loadAcademyType() {
@@ -208,10 +210,13 @@
         if (!station) return;
         const cost = ext.price + DEFAULT_VEHICLE_PRICE; // + its vehicle
         // Missions you actually get but can't finish weigh most: each one is lost credits
-        const value = 6 + stats.count * 2.5 * Math.min(1.5, stats.avgCredits / 1500) + Math.min(40, missed * 4);
+        const lowYield = stats.avgCredits > 0 && stats.avgCredits < LOW_YIELD_CREDITS;
+        const value = lowYield
+          ? 3 + stats.count * 0.5 + Math.min(10, missed * 1.5)
+          : 6 + stats.count * 2.5 * Math.min(1.5, stats.avgCredits / 1500) + Math.min(40, missed * 4);
         const edu = educationOf(ext);
         // Nobody trained yet: the vehicle would stand idle, so train first (academy/training list) and rank it lower
-        candidates.push({ kind: 'extension', ext, stats, missed, s: station, cost, value: edu && !edu.trained ? value * 0.5 : value, edu });
+        candidates.push({ kind: 'extension', ext, stats, missed, s: station, cost, value: edu && !edu.trained ? value * 0.5 : value, edu, lowYield });
       });
 
       // 3b. Own academy: when specialists wait for training (each one unlocks missions)
@@ -405,6 +410,7 @@
             title = `🧩 <b>${short(step.s.station.caption)}</b>: uitbreiding <b>${escapeHtml(step.ext.name)}</b> (${step.ext.days} dagen)`;
             const why = [];
             if (step.missed) why.push(`<b>je miste hem ${step.missed}× in 14 dagen</b>`);
+            if (step.lowYield) why.push('⚠️ <b>lage opbrengst</b>: verdient zich traag terug, doe dit pas als de rest staat');
             if (step.stats.count)
               why.push(
                 `+${step.stats.count} meldingstypes, gem. ${formatCredits(step.stats.avgCredits)} cr (${escapeHtml(
