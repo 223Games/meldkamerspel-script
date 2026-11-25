@@ -111,6 +111,7 @@
           fetchJson('/api/vehicles'),
           loadAcademyState(),
         ]);
+        data.extensionStats ||= await loadExtensionMissionStats(countFireStations(buildings)).catch(() => ({})); // shared with the plan
         const queue = buildTrainingQueue(collectSpecialists(data, buildings, vehicles), academyState, untrainedExtensionNeeds(data, notOwnedStats()));
         const short = shortPost;
         const open = (url) => (typeof unsafeWindow.lightboxOpen === 'function' ? unsafeWindow.lightboxOpen(url) : window.open(url, '_blank'));

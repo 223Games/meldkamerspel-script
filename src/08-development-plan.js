@@ -358,7 +358,7 @@
       try {
         const [data, buildings] = await Promise.all([analysePersonnel(), fetchJson('/api/buildings')]);
         const stationCount = countFireStations(buildings);
-        data.extensionStats = await loadExtensionMissionStats(stationCount).catch(() => ({}));
+        data.extensionStats ||= await loadExtensionMissionStats(stationCount).catch(() => ({}));
         const academyType = await loadAcademyType().catch(() => null);
         data.academy = academyType
           ? { ...academyType, owned: buildings.some((b) => b.building_type === academyType.typeId) }

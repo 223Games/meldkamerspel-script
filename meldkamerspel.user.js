@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.11.0
+// @version      7.11.1
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -3824,7 +3824,7 @@
       try {
         const [data, buildings] = await Promise.all([analysePersonnel(), fetchJson('/api/buildings')]);
         const stationCount = countFireStations(buildings);
-        data.extensionStats = await loadExtensionMissionStats(stationCount).catch(() => ({}));
+        data.extensionStats ||= await loadExtensionMissionStats(stationCount).catch(() => ({}));
         const academyType = await loadAcademyType().catch(() => null);
         data.academy = academyType
           ? { ...academyType, owned: buildings.some((b) => b.building_type === academyType.typeId) }
@@ -5784,6 +5784,7 @@ ${rows
           fetchJson('/api/vehicles'),
           loadAcademyState(),
         ]);
+        data.extensionStats ||= await loadExtensionMissionStats(countFireStations(buildings)).catch(() => ({})); // shared with the plan
         const queue = buildTrainingQueue(collectSpecialists(data, buildings, vehicles), academyState, untrainedExtensionNeeds(data, notOwnedStats()));
         const short = shortPost;
         const open = (url) => (typeof unsafeWindow.lightboxOpen === 'function' ? unsafeWindow.lightboxOpen(url) : window.open(url, '_blank'));
