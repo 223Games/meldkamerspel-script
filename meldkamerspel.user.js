@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.5.2
+// @version      7.6.0
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -73,6 +73,7 @@
   /** On/off switches (Tampermonkey storage, per browser). `needsReload`: only read when the page starts. */
   const SETTINGS = [
     { key: 'dispatchAssist', label: 'Alarmeerhulp in meldingsvenster', def: true, needsReload: true },
+    { key: 'worklist', label: 'Werklijst: "Alarmeren → volgende uit mijn lijst"', def: true },
     { key: 'queueBusyVehicles', label: 'Dooralarmeren bij tekort', def: true, needsReload: true },
     { key: 'autoReturnSurplus', label: 'Overbodige voertuigen terugsturen', def: true, needsReload: true },
     { key: 'coverageMap', label: 'Dekkingskaart (vrije TS per post)', def: true },
@@ -135,7 +136,11 @@
 
   // Started at the bottom of the script, after all constants are defined
   function boot() {
-    if (isMainPage) registerSettingsMenu();
+    if (isMainPage) {
+      registerSettingsMenu();
+      registerSyncMenu();
+      startSync();
+    }
     if (isMainPage) {
       initHomeAssistantBridge();
       watchMissionWindows();
@@ -172,11 +177,81 @@
   /* Mission windows (lightbox iframes on the main page)                 */
   /* ------------------------------------------------------------------ */
 
+  /* ---------- Worklist: alarm, then open the next mission from YOUR priority list ---------- */
+
+  const WORKLIST_NEXT = 'mks_worklist_next';
+  const WORKLIST_DONE = 'mks_worklist_done';
+  const sessionRead = (key, fallback) => {
+    try {
+      return JSON.parse(sessionStorage.getItem(key) || 'null') ?? fallback;
+    } catch (e) {
+      return fallback;
+    }
+  };
+  const sessionWrite = (key, value) => {
+    try {
+      if (value === null) sessionStorage.removeItem(key);
+      else sessionStorage.setItem(key, JSON.stringify(value));
+    } catch (e) {
+      /* best-effort */
+    }
+  };
+
+  /** Next mission from the priority list, skipping this one and what the worklist alarmed in the last 10 min. */
+  async function worklistNext(currentId) {
+    const credits = await loadMissionCredits();
+    const done = sessionRead(WORKLIST_DONE, {});
+    return rankOwnMissions(credits).find((m) => m.id !== currentId && !(Date.now() - (done[m.id] || 0) < 10 * 60e3)) || null;
+  }
+
+  /**
+   * Adds "▶ Alarmeren → <next>" next to the game's "Alarmeren en volgende". It uses the game's own
+   * alarm-and-next submit; when the new window loads, it is redirected to the mission from your list.
+   */
+  async function addWorklistButton(doc) {
+    const gameNext = doc.querySelector('#mission-form .alert_next');
+    const currentId = (doc.location.pathname.match(/\/missions\/(\d+)/) || [])[1];
+    if (!gameNext || !currentId || doc.getElementById('mks_worklist_btn')) return;
+    const next = await worklistNext(currentId);
+    if (!next) return;
+    const btn = doc.createElement('a');
+    btn.id = 'mks_worklist_btn';
+    btn.href = '#';
+    btn.className = 'btn btn-primary';
+    btn.style.marginLeft = '4px';
+    btn.title = 'Alarmeren en daarna de volgende melding uit je eigen prioriteitenlijst openen';
+    btn.textContent = `▶ Alarmeren → ${next.caption}`;
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const done = sessionRead(WORKLIST_DONE, {});
+      done[currentId] = Date.now();
+      sessionWrite(WORKLIST_DONE, done);
+      sessionWrite(WORKLIST_NEXT, { id: next.id, ts: Date.now() });
+      gameNext.click(); // the game's own alarm + next: same submit, same checks
+    });
+    gameNext.after(btn);
+  }
+
+  /** On a new mission window: if the worklist asked for another mission, go there instead. */
+  function followWorklist(doc) {
+    const want = sessionRead(WORKLIST_NEXT, null);
+    if (!want) return false;
+    sessionWrite(WORKLIST_NEXT, null);
+    if (Date.now() - want.ts > 20e3) return false; // stale: the alarm round-trip takes a few seconds
+    const currentId = (doc.location.pathname.match(/\/missions\/(\d+)/) || [])[1];
+    if (currentId === want.id) return false;
+    doc.location.href = `/missions/${want.id}`;
+    return true;
+  }
+
   function tryDispatchAssistant(doc) {
     const isMissionPage = /^\/missions\/\d+/.test(doc.location?.pathname || '') && !!doc.getElementById('mission-form');
+    // After "▶ Alarmeren → …" the game opens ITS next mission (or another page): load the one from your list
+    if (!(isMainPage && doc === document) && followWorklist(doc)) return; // only inside the lightbox, never the main page
     if (!isMissionPage || doc.documentElement.dataset.mksAssist) return; // not a mission, or already running
     doc.documentElement.dataset.mksAssist = '1';
     initDispatchAssistant(doc);
+    if (setting('worklist')) addWorklistButton(doc).catch((e) => console.error('[MKS→HA] Worklist failed', e));
   }
 
   function watchMissionWindows() {
@@ -3536,7 +3611,11 @@
         if (e.available && !e.enabled)
           notes.push(
             `⏸️ <b>${escapeHtml(e.caption)}</b> op ${escapeHtml(b.caption.trim().replace(`${CONFIG.vru.prefix} `, ''))} staat uit${
-              e.type_id === 15 ? ': pas aanzetten als je een natuurbrandvoertuig (DA-LA-NB, VW-NB of NBH) hebt' : ''
+              e.type_id === 15
+                ? ': pas aanzetten als je een natuurbrandvoertuig (DA-LA-NB, VW-NB of NBH) hebt'
+                : PLAN_EXTENSIONS.some((x) => x.typeId === e.type_id)
+                  ? ' — <b>bewust?</b> Een uitgezette uitbreiding doet niet mee; aanzetten via het gebouw → uitbreidingen'
+                  : ''
             }`
           );
       })
@@ -3615,12 +3694,18 @@
         const short = (caption) => escapeHtml(caption.trim().replace(`${CONFIG.vru.prefix} `, ''));
 
         let cumulative = 0;
-        let affordable = 0;
+        // Greedy over the balance: a cheaper later step you can pay now is "kan nu",
+        // even when an expensive step (a new station) comes first and needs saving for
+        let remaining = balance;
+        const nowSteps = [];
         const list = document.createElement('div');
         steps.forEach((step, i) => {
           cumulative += step.cost;
-          const canNow = cumulative <= balance;
-          if (canNow) affordable = i + 1;
+          const canNow = step.cost <= remaining;
+          if (canNow) {
+            remaining -= step.cost;
+            nowSteps.push(i + 1);
+          }
 
           let title;
           let detail;
@@ -3673,7 +3758,7 @@
           row.style.cssText = `display:flex;justify-content:space-between;gap:6px;margin-bottom:6px;${canNow ? '' : 'opacity:.75'}`;
           row.dataset.mksStep = canNow ? 'now' : 'later'; // counted in the collapsed section header
           row.innerHTML = `<span>${i + 1}. ${title}<br><small class="text-muted">${formatCredits(step.cost)} · totaal ${formatCredits(cumulative)}${
-            canNow ? ' · <span class="text-success">kan nu</span>' : ''
+            canNow ? ' · <span class="text-success"><b>kan nu</b></span>' : ''
           }</small><br><small>${detail}</small></span>`;
           const right = document.createElement('span');
           right.style.whiteSpace = 'nowrap';
@@ -3684,7 +3769,9 @@
 
         const intro = document.createElement('div');
         intro.innerHTML = `<small class="text-muted">Saldo ${formatCredits(balance)} · ${
-          affordable ? `stap 1–${affordable} kun je nu doen` : 'spaar voor stap 1'
+          nowSteps.length
+            ? `nu te doen: stap ${nowSteps.join(', ')} (${formatCredits(balance - remaining)})${nowSteps[0] !== 1 ? ' · daarna sparen voor stap 1' : ''}`
+            : 'spaar voor stap 1'
         } · volgorde = meeste waarde per credit, rekening houdend met plekken, levels en personeel<br>Nieuwe post nu: ${formatCredits(
           stationBuildPrice(stationCount, true)
         )} (klein) / ${formatCredits(stationBuildPrice(stationCount, false))} (normaal) · elke post maakt de volgende duurder</small>${
@@ -3829,7 +3916,7 @@
         else official[k] = v;
       });
     }
-    const stats = memRead(MEMORY_KEYS.types, {})[typeId] || null;
+    const stats = memoryTypesMerged()[typeId] || null; // all synced devices
     const min = { ...official };
     const learned = [];
     if (stats && stats.n >= 2) {
@@ -3984,7 +4071,7 @@
         const [fireTypes, aaos, buildings] = await Promise.all([loadFireMissionTypes(), loadAaoDefinitions(), fetchJson('/api/buildings')]);
         const stationCount = buildings.filter((b) => b.building_type === 0).length;
         const reqCache = Object.fromEntries(fireTypes.map((t) => [t.id, { r: t.r, c: t.c }]));
-        const memory = memRead(MEMORY_KEYS.types, {});
+        const memory = memoryTypesMerged(); // all synced devices
 
         const rows = fireTypes
           .filter((t) => t.stations <= stationCount)
@@ -4128,6 +4215,17 @@ ${rows
     return true;
   }
 
+  /** Last two digits the VRU uses for a vehicle type (HV → "71", TS → "31"): most common in the reference. */
+  function vruTypeDigits(typeId) {
+    const counts = {};
+    Object.values(VRU_STATIONS).forEach(([, list]) =>
+      list.forEach(([suffix, t]) => {
+        if (kindOf(t) === kindOf(typeId)) counts[suffix.slice(-2)] = (counts[suffix.slice(-2)] || 0) + 1;
+      })
+    );
+    return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || '99';
+  }
+
   function planRedistribution(data) {
     const { stationRows, typeInfo, vehicles } = data;
     const crewOf = (typeId) => typeInfo[typeId]?.maxCrew || 3;
@@ -4162,6 +4260,9 @@ ${rows
 
       r.own.forEach((v) => {
         if (MOVE_EXCLUDED_TYPES.has(v.vehicle_type) || SPECIALIST_NAME.test(v.caption || '')) return;
+        // Specialist at one of its real VRU posts (Brandbase), e.g. the DB-RI on 09-06 Werkhoven: belongs here
+        const vruHome = vruHomeOf(v.caption || '', v.vehicle_type);
+        if (vruHome?.posts?.includes(home.code)) return;
         const number = (v.caption || '').match(/09-(\d{4})/)?.[1];
         const isOfficial = official.some(([suffix, t]) => suffix === number && kindOf(t) === kindOf(v.vehicle_type));
         if (isOfficial) return;
@@ -4183,6 +4284,17 @@ ${rows
         const target = targets.find((t) => t.s.freeSlots > 0);
 
         if (!target) {
+          // Name doesn't follow "BRW 09-xxxx" at all (e.g. "02-6571 HV"): at least give it a VRU-style name here
+          if (!number && home.code) {
+            const taken = new Set(r.own.map((o) => (o.caption || '').match(/09-(\d{4})/)?.[1]).filter(Boolean));
+            const digits = vruTypeDigits(v.vehicle_type);
+            let suffix = `${home.code}${digits}`;
+            for (let n = 2; taken.has(suffix) && n < 10; n++) suffix = `${home.code}${digits.slice(0, 1)}${n}`;
+            if (!taken.has(suffix)) {
+              renames.push({ vehicle: v, station: r.station, to: vehicleName(suffix, v.vehicle_type), misnamed: true });
+              return;
+            }
+          }
           stuck.push({ vehicle: v, station: r.station, waiting: targets[0] || null });
           return;
         }
@@ -4301,7 +4413,9 @@ ${rows
         if (moves.length || renames.length || stuck.length) heading('🚒 Voertuigen die hier officieel niet horen');
         renames.forEach((r) =>
           line(
-            `✏️ <b>${short(r.vehicle.caption)}</b> <small class="text-muted">· ${short(r.station.caption)}</small><br><small>Hoort hier wel, maar onder het officiële nummer → <b>${short(r.to)}</b></small>`,
+            `✏️ <b>${short(r.vehicle.caption)}</b> <small class="text-muted">· ${short(r.station.caption)}</small><br><small>${
+              r.misnamed ? 'Naam volgt de VRU-nummering niet; voorstel' : 'Hoort hier wel, maar onder het officiële nummer'
+            } → <b>${short(r.to)}</b></small>`,
             button('Hernoem', () => renameVehicle(r.vehicle.id, r.to), 'btn-success')
           )
         );
@@ -4396,9 +4510,19 @@ ${rows
     return data;
   }
 
+  /** The main game page (also when Tampermonkey runs this copy inside a mission window). */
+  function mainDocument() {
+    if (isMainPage) return document;
+    try {
+      return window.parent?.document?.getElementById('mission_list') ? window.parent.document : document;
+    } catch (e) {
+      return document;
+    }
+  }
+
   /** Missions in one of the game's sidebar lists, read from the page itself. */
   function readMissionList(selector) {
-    return [...document.querySelectorAll(`${selector} .missionSideBarEntry`)]
+    return [...mainDocument().querySelectorAll(`${selector} .missionSideBarEntry`)]
       .filter((e) => !e.classList.contains('mission_deleted') && e.style.display !== 'none')
       .map((entry) => {
         const id = entry.getAttribute('mission_id');
@@ -4428,6 +4552,23 @@ ${rows
         .map((s) => ({ s, km: distanceKm({ latitude: point.lat, longitude: point.lng }, s) }))
         .sort((a, b) => a.km - b.km)[0] || null
     );
+  }
+
+  /**
+   * Own missions that need you, best first: almost done (1 missing), then not dispatched yet
+   * (by credits), then more missing, then the rest. Shared by the priorities list and the worklist.
+   */
+  function rankOwnMissions(credits) {
+    const score = (m) => {
+      const missing = missingCount(m);
+      if (missing === 1) return 3e6 + (credits[m.typeId] || 0);
+      if (m.state === 'red') return 2e6 + (credits[m.typeId] || 0);
+      if (missing > 1) return 1e6 + (credits[m.typeId] || 0) / missing;
+      return credits[m.typeId] || 0;
+    };
+    return readMissionList('#mission_list')
+      .filter((m) => m.state !== 'green' || missingCount(m))
+      .sort((a, b) => score(b) - score(a));
   }
 
   /* ---------- 1 + 2: priorities (own missions) and team radar (shared missions) ---------- */
@@ -4464,16 +4605,7 @@ ${rows
         };
         wrap.innerHTML = '';
 
-        // Own missions: almost done first, then not dispatched yet by credits, then the rest
-        const own = readMissionList('#mission_list');
-        const score = (m) => {
-          const missing = missingCount(m);
-          if (missing === 1) return 3e6 + (credits[m.typeId] || 0);
-          if (m.state === 'red') return 2e6 + (credits[m.typeId] || 0);
-          if (missing > 1) return 1e6 + (credits[m.typeId] || 0) / missing;
-          return credits[m.typeId] || 0;
-        };
-        const ranked = own.filter((m) => m.state !== 'green' || missingCount(m)).sort((a, b) => score(b) - score(a));
+        const ranked = rankOwnMissions(credits);
         wrap.append(heading(`🎯 Jouw meldingen (${ranked.length} vragen actie)`));
         if (!ranked.length) wrap.append(Object.assign(document.createElement('em'), { textContent: 'Alles loopt. 👍' }));
         ranked.slice(0, 12).forEach((m) => {
@@ -4522,13 +4654,23 @@ ${rows
 
   const STUCK_LIMITS = { 6: 30 * 60e3, 4: 3 * 3600e3 }; // status 6 (buiten dienst) > 30 min, status 4 (ter plaatse) > 3 h
 
-  /** Tracks since when each vehicle has its current status (per browser). */
+  // Longer than this without a look (browser closed, other device): we can't know it stayed put
+  const STATUS_GAP_MS = 20 * 60e3;
+
+  /**
+   * Tracks since when each vehicle has its current status at its current target (per browser).
+   * Restarts when the status or target changes, or after a gap in observation: before, a vehicle seen
+   * on scene on day 1 and again on day 13 (at another mission) was reported as "329 hours on scene".
+   */
   function trackVehicleStatus(vehicles) {
     const since = extrasRead('status_since_v1', {});
+    const now = Date.now();
     const next = {};
     vehicles.forEach((v) => {
       const prev = since[v.id];
-      next[v.id] = prev && prev.fms === v.fms_real ? prev : { fms: v.fms_real, ts: Date.now() };
+      const same =
+        prev && prev.fms === v.fms_real && (prev.target ?? null) === (v.target_id ?? null) && now - (prev.seen || prev.ts) < STATUS_GAP_MS;
+      next[v.id] = same ? { ...prev, seen: now } : { fms: v.fms_real, target: v.target_id ?? null, ts: now, seen: now };
     });
     extrasWrite('status_since_v1', next);
     return next;
@@ -4790,6 +4932,11 @@ ${rows
     ha.className = 'text-muted';
     ha.textContent = `Home Assistant: ${CONFIG.webhookId ? 'webhook ingesteld' : 'geen webhook (Tampermonkey-menu → Home Assistant instellen)'}`;
     wrap.append(ha);
+    const sync = document.createElement('small');
+    sync.className = 'text-muted';
+    sync.style.display = 'block';
+    sync.textContent = syncStatusText();
+    wrap.append(sync);
     return wrap;
   }
 
@@ -4938,6 +5085,14 @@ ${rows
         });
       });
 
+    // Basic vehicles every post has in the VRU layout (OvD, TS, AL, HV…) are not specialists,
+    // unless the VRU keeps them at specific posts (AB, NB, waterongevallen…)
+    const baseTypes = new Set(Object.values(VRU_STATIONS).flatMap(([, vehiclesRef]) => vehiclesRef.map(([, t]) => t)));
+    for (let i = list.length - 1; i >= 0; i--) {
+      const typeId = list[i].shop?.typeId;
+      if (typeId != null && baseTypes.has(typeId) && !vruHomeOf(list[i].name, typeId)) list.splice(i, 1);
+    }
+
     list.forEach((sp) => {
       const vru = vruHomeOf(sp.name, sp.shop?.typeId);
       if (vru && /brush/i.test(sp.name)) sp.name = 'NB (natuurbrandvoertuig, spelcode "brush")';
@@ -5027,6 +5182,263 @@ ${rows
       }
     })();
     return wrap;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Sync: share what the script learned between devices (GitHub Gist)   */
+  /* ------------------------------------------------------------------ */
+
+  // One private gist, one JSON file: { v, devices: { <deviceId>: { name, ts, data: { <key>: value } } } }
+  const SYNC_FILE = 'meldkamerspel-sync.json';
+  const SYNC_REMOTE_TYPES = 'mks_sync_remote_types_v1'; // mission memory of the OTHER devices
+  const SYNC_STATUS = 'mks_sync_status_v1';
+
+  /**
+   * Keys and how to merge them. `log` keys are keyed by mission id (or are lists of unique events):
+   * merging is idempotent, so remote entries are folded into the local copy. Mission memory holds
+   * running totals: it is kept per device and only added up when read (memoryTypesMerged).
+   */
+  const SYNC_KEYS = {
+    mks_shortage_v1: 'byId',
+    mks_not_owned_v1: 'byId',
+    mks_extras_completed_v1: 'events',
+    mks_extras_credit_snaps_v1: 'events',
+    mks_specialists_v1: 'register',
+    mks_mem_types_v1: 'perDevice',
+  };
+
+  const syncConfig = () => ({ token: GM_getValue('syncToken', ''), gistId: GM_getValue('syncGistId', '') });
+
+  function syncDeviceId() {
+    let id = GM_getValue('syncDevice', '');
+    if (!id) {
+      id = `d${Math.random().toString(36).slice(2, 10)}`;
+      GM_setValue('syncDevice', id);
+    }
+    return id;
+  }
+
+  const syncDeviceName = () =>
+    /iphone|ipad|android/i.test(navigator.userAgent) ? 'mobiel' : /windows/i.test(navigator.userAgent) ? 'Windows' : /mac/i.test(navigator.userAgent) ? 'Mac' : 'browser';
+
+  const lsRead = (key, fallback) => {
+    try {
+      return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback;
+    } catch (e) {
+      return fallback;
+    }
+  };
+  const lsWrite = (key, value) => {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch (e) {
+      /* best-effort */
+    }
+  };
+
+  /** GitHub API call through Tampermonkey (no CORS limits); resolves with parsed JSON. */
+  function githubApi(method, path, token, body) {
+    return new Promise((resolve, reject) =>
+      GM_xmlhttpRequest({
+        method,
+        url: `https://api.github.com${path}`,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'Content-Type': 'application/json',
+        },
+        data: body ? JSON.stringify(body) : undefined,
+        onload: (res) => {
+          if (res.status >= 200 && res.status < 300) {
+            try {
+              resolve(JSON.parse(res.responseText || '{}'));
+            } catch (e) {
+              reject(e);
+            }
+          } else reject(new Error(`GitHub ${res.status}`));
+        },
+        onerror: () => reject(new Error('GitHub niet bereikbaar')),
+      })
+    );
+  }
+
+  /* ---------- merging ---------- */
+
+  /** Logs keyed by mission id: union; same mission on two devices → highest counts, earliest time. */
+  function mergeById(a = {}, b = {}) {
+    const out = { ...a };
+    Object.entries(b).forEach(([id, entry]) => {
+      const mine = out[id];
+      if (!mine) return (out[id] = entry);
+      const pick = (x = {}, y = {}) => {
+        const m = { ...x };
+        Object.entries(y).forEach(([k, n]) => (m[k] = Math.max(m[k] || 0, n)));
+        return m;
+      };
+      out[id] = {
+        ...mine,
+        ts: Math.min(mine.ts || Infinity, entry.ts || Infinity),
+        ...(mine.cats || entry.cats ? { cats: pick(mine.cats, entry.cats) } : {}),
+        ...(mine.names || entry.names ? { names: pick(mine.names, entry.names) } : {}),
+        at: mine.at || entry.at || null,
+      };
+    });
+    return out;
+  }
+
+  /** Event lists ({ ts, … }): union without exact duplicates, sorted, last 30 days. */
+  function mergeEvents(a = [], b = []) {
+    const seen = new Set();
+    return [...a, ...b]
+      .filter((e) => {
+        const key = JSON.stringify(e);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return Date.now() - e.ts < 30 * 86400e3;
+      })
+      .sort((x, y) => x.ts - y.ts);
+  }
+
+  /** Specialist register: earliest first seen, latest last seen (with its home). */
+  function mergeRegister(a = {}, b = {}) {
+    const out = { ...a };
+    Object.entries(b).forEach(([name, r]) => {
+      const mine = out[name];
+      if (!mine) return (out[name] = r);
+      const newer = (r.lastSeen || 0) > (mine.lastSeen || 0) ? r : mine;
+      out[name] = { ...newer, firstSeen: Math.min(mine.firstSeen || Infinity, r.firstSeen || Infinity) };
+    });
+    return out;
+  }
+
+  /** Mission memory of several devices added up (counts, sums; max for maxima; latest name/time). */
+  function addMemoryTypes(...sets) {
+    const out = {};
+    sets.forEach((types) =>
+      Object.entries(types || {}).forEach(([typeId, t]) => {
+        const o = (out[typeId] = out[typeId] || { name: t.name, n: 0, usedSum: {}, required: {}, requiredMax: {} });
+        o.name = t.name || o.name;
+        o.n += t.n || 0;
+        Object.entries(t.usedSum || {}).forEach(([k, v]) => (o.usedSum[k] = (o.usedSum[k] || 0) + v));
+        Object.entries(t.required || {}).forEach(([k, v]) => (o.required[k] = (o.required[k] || 0) + v));
+        Object.entries(t.requiredMax || {}).forEach(([k, v]) => (o.requiredMax[k] = Math.max(o.requiredMax[k] || 0, v)));
+        o.last = Math.max(o.last || 0, t.last || 0);
+      })
+    );
+    return out;
+  }
+
+  /** Mission memory to READ: this device plus every other synced device. Writes stay local. */
+  function memoryTypesMerged() {
+    const remote = lsRead(SYNC_REMOTE_TYPES, {});
+    return addMemoryTypes(lsRead('mks_mem_types_v1', {}), ...Object.values(remote));
+  }
+
+  /** Folds the other devices' data into this browser; returns the remote mission memory per device. */
+  function applyRemote(devices, self) {
+    const remoteTypes = {};
+    Object.entries(devices || {}).forEach(([id, dev]) => {
+      if (id === self) return;
+      Object.entries(SYNC_KEYS).forEach(([key, how]) => {
+        const value = dev.data?.[key];
+        if (value === undefined) return;
+        if (how === 'perDevice') remoteTypes[id] = value;
+        else if (how === 'byId') lsWrite(key, mergeById(lsRead(key, {}), value));
+        else if (how === 'events') lsWrite(key, mergeEvents(lsRead(key, []), value));
+        else if (how === 'register') lsWrite(key, mergeRegister(lsRead(key, {}), value));
+      });
+    });
+    lsWrite(SYNC_REMOTE_TYPES, remoteTypes);
+  }
+
+  /* ---------- sync run ---------- */
+
+  let syncBusy = false;
+
+  /** Download → merge → upload this device's own data. Quietly does nothing without a token. */
+  async function syncNow() {
+    const { token, gistId } = syncConfig();
+    if (!token || syncBusy) return null;
+    syncBusy = true;
+    try {
+      const self = syncDeviceId();
+      let id = gistId;
+      let doc = { v: 1, devices: {} };
+      if (id) {
+        const gist = await githubApi('GET', `/gists/${id}`, token);
+        const file = gist.files?.[SYNC_FILE];
+        if (file?.content) doc = JSON.parse(file.content);
+      }
+      applyRemote(doc.devices, self);
+
+      const data = {};
+      Object.keys(SYNC_KEYS).forEach((key) => {
+        const value = lsRead(key, null);
+        if (value !== null) data[key] = value;
+      });
+      doc.devices = { ...(doc.devices || {}), [self]: { name: syncDeviceName(), ts: Date.now(), data } };
+      const body = { files: { [SYNC_FILE]: { content: JSON.stringify(doc) } } };
+      if (id) await githubApi('PATCH', `/gists/${id}`, token, body);
+      else {
+        const created = await githubApi('POST', '/gists', token, { ...body, public: false, description: 'Meldkamerspel-script: gedeelde leerdata' });
+        id = created.id;
+        GM_setValue('syncGistId', id);
+      }
+      const status = { ts: Date.now(), ok: true, devices: Object.values(doc.devices).map((d) => `${d.name} (${new Date(d.ts).toLocaleString('nl-NL')})`) };
+      lsWrite(SYNC_STATUS, status);
+      log('Synced', status);
+      return status;
+    } catch (e) {
+      console.error('[MKS→HA] Sync failed', e);
+      lsWrite(SYNC_STATUS, { ts: Date.now(), ok: false, error: e.message });
+      return null;
+    } finally {
+      syncBusy = false;
+    }
+  }
+
+  /** Tampermonkey menu: token (gist rights only) and, on the 2nd/3rd device, the gist id of the first. */
+  function registerSyncMenu() {
+    GM_registerMenuCommand('Synchronisatie instellen (leerdata delen)', async () => {
+      const token = window.prompt(
+        'GitHub-token met alleen "gist"-rechten (github.com → Settings → Developer settings → Personal access tokens).\nLeeg = synchronisatie uit.',
+        GM_getValue('syncToken', '')
+      );
+      if (token === null) return;
+      const gistId = window.prompt(
+        'Gist-ID. Op je eerste apparaat leeg laten: het script maakt er een. Op je andere apparaten het ID van het eerste apparaat invullen (staat in VRU-paneel → Instellingen).',
+        GM_getValue('syncGistId', '')
+      );
+      if (gistId === null) return;
+      GM_setValue('syncToken', token.trim());
+      GM_setValue('syncGistId', gistId.trim());
+      const status = token.trim() ? await syncNow() : null;
+      window.alert(
+        !token.trim()
+          ? 'Synchronisatie staat uit.'
+          : status
+            ? `Gesynchroniseerd. Gist-ID: ${GM_getValue('syncGistId', '')}\nApparaten: ${status.devices.join(', ')}`
+            : 'Synchroniseren mislukt: controleer token en gist-ID (F12 → console).'
+      );
+    });
+  }
+
+  /** Every 15 minutes and when the page starts (a few seconds in, so the game loads first). */
+  function startSync() {
+    if (!syncConfig().token) return;
+    setTimeout(syncNow, 5000);
+    setInterval(syncNow, 15 * 60e3);
+  }
+
+  /** One line for the settings section. */
+  function syncStatusText() {
+    const { token, gistId } = syncConfig();
+    if (!token) return 'Synchronisatie: uit (Tampermonkey-menu → Synchronisatie instellen)';
+    const s = lsRead(SYNC_STATUS, null);
+    const when = s ? new Date(s.ts).toLocaleString('nl-NL') : 'nog niet';
+    return s?.ok
+      ? `Synchronisatie: ${when} · gist ${gistId} · apparaten: ${s.devices.join(', ')}`
+      : `Synchronisatie: ${s ? `mislukt (${s.error})` : 'wacht op eerste run'} · gist ${gistId || '(nog geen)'}`;
   }
   boot();
 })();

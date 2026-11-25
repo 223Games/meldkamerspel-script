@@ -143,6 +143,14 @@
         });
       });
 
+    // Basic vehicles every post has in the VRU layout (OvD, TS, AL, HV…) are not specialists,
+    // unless the VRU keeps them at specific posts (AB, NB, waterongevallen…)
+    const baseTypes = new Set(Object.values(VRU_STATIONS).flatMap(([, vehiclesRef]) => vehiclesRef.map(([, t]) => t)));
+    for (let i = list.length - 1; i >= 0; i--) {
+      const typeId = list[i].shop?.typeId;
+      if (typeId != null && baseTypes.has(typeId) && !vruHomeOf(list[i].name, typeId)) list.splice(i, 1);
+    }
+
     list.forEach((sp) => {
       const vru = vruHomeOf(sp.name, sp.shop?.typeId);
       if (vru && /brush/i.test(sp.name)) sp.name = 'NB (natuurbrandvoertuig, spelcode "brush")';

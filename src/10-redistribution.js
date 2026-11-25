@@ -33,6 +33,17 @@
     return true;
   }
 
+  /** Last two digits the VRU uses for a vehicle type (HV → "71", TS → "31"): most common in the reference. */
+  function vruTypeDigits(typeId) {
+    const counts = {};
+    Object.values(VRU_STATIONS).forEach(([, list]) =>
+      list.forEach(([suffix, t]) => {
+        if (kindOf(t) === kindOf(typeId)) counts[suffix.slice(-2)] = (counts[suffix.slice(-2)] || 0) + 1;
+      })
+    );
+    return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || '99';
+  }
+
   function planRedistribution(data) {
     const { stationRows, typeInfo, vehicles } = data;
     const crewOf = (typeId) => typeInfo[typeId]?.maxCrew || 3;
@@ -67,6 +78,9 @@
 
       r.own.forEach((v) => {
         if (MOVE_EXCLUDED_TYPES.has(v.vehicle_type) || SPECIALIST_NAME.test(v.caption || '')) return;
+        // Specialist at one of its real VRU posts (Brandbase), e.g. the DB-RI on 09-06 Werkhoven: belongs here
+        const vruHome = vruHomeOf(v.caption || '', v.vehicle_type);
+        if (vruHome?.posts?.includes(home.code)) return;
         const number = (v.caption || '').match(/09-(\d{4})/)?.[1];
         const isOfficial = official.some(([suffix, t]) => suffix === number && kindOf(t) === kindOf(v.vehicle_type));
         if (isOfficial) return;
@@ -88,6 +102,17 @@
         const target = targets.find((t) => t.s.freeSlots > 0);
 
         if (!target) {
+          // Name doesn't follow "BRW 09-xxxx" at all (e.g. "02-6571 HV"): at least give it a VRU-style name here
+          if (!number && home.code) {
+            const taken = new Set(r.own.map((o) => (o.caption || '').match(/09-(\d{4})/)?.[1]).filter(Boolean));
+            const digits = vruTypeDigits(v.vehicle_type);
+            let suffix = `${home.code}${digits}`;
+            for (let n = 2; taken.has(suffix) && n < 10; n++) suffix = `${home.code}${digits.slice(0, 1)}${n}`;
+            if (!taken.has(suffix)) {
+              renames.push({ vehicle: v, station: r.station, to: vehicleName(suffix, v.vehicle_type), misnamed: true });
+              return;
+            }
+          }
           stuck.push({ vehicle: v, station: r.station, waiting: targets[0] || null });
           return;
         }
@@ -206,7 +231,9 @@
         if (moves.length || renames.length || stuck.length) heading('🚒 Voertuigen die hier officieel niet horen');
         renames.forEach((r) =>
           line(
-            `✏️ <b>${short(r.vehicle.caption)}</b> <small class="text-muted">· ${short(r.station.caption)}</small><br><small>Hoort hier wel, maar onder het officiële nummer → <b>${short(r.to)}</b></small>`,
+            `✏️ <b>${short(r.vehicle.caption)}</b> <small class="text-muted">· ${short(r.station.caption)}</small><br><small>${
+              r.misnamed ? 'Naam volgt de VRU-nummering niet; voorstel' : 'Hoort hier wel, maar onder het officiële nummer'
+            } → <b>${short(r.to)}</b></small>`,
             button('Hernoem', () => renameVehicle(r.vehicle.id, r.to), 'btn-success')
           )
         );

@@ -32,7 +32,7 @@ w.fetch = async (url) => {
   return { ok: true, json: async () => (key ? api[key] : []), text: async () => '<html><body></body></html>' };
 };
 // Stuck tracking: pretend vehicle 2 has been out of service for an hour
-w.localStorage.setItem('mks_extras_status_since_v1', JSON.stringify({ 2: { fms: 6, ts: now - 3600e3 } }));
+w.localStorage.setItem('mks_extras_status_since_v1', JSON.stringify({ 2: { fms: 6, target: null, ts: now - 3600e3, seen: now - 60e3 } }));
 w.localStorage.setItem('mks_extras_completed_v1', JSON.stringify([{ ts: now - 1000, typeId: '11' }]));
 
 const markers = [];

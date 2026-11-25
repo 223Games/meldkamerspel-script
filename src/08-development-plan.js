@@ -256,7 +256,11 @@
         if (e.available && !e.enabled)
           notes.push(
             `⏸️ <b>${escapeHtml(e.caption)}</b> op ${escapeHtml(b.caption.trim().replace(`${CONFIG.vru.prefix} `, ''))} staat uit${
-              e.type_id === 15 ? ': pas aanzetten als je een natuurbrandvoertuig (DA-LA-NB, VW-NB of NBH) hebt' : ''
+              e.type_id === 15
+                ? ': pas aanzetten als je een natuurbrandvoertuig (DA-LA-NB, VW-NB of NBH) hebt'
+                : PLAN_EXTENSIONS.some((x) => x.typeId === e.type_id)
+                  ? ' — <b>bewust?</b> Een uitgezette uitbreiding doet niet mee; aanzetten via het gebouw → uitbreidingen'
+                  : ''
             }`
           );
       })
@@ -335,12 +339,18 @@
         const short = (caption) => escapeHtml(caption.trim().replace(`${CONFIG.vru.prefix} `, ''));
 
         let cumulative = 0;
-        let affordable = 0;
+        // Greedy over the balance: a cheaper later step you can pay now is "kan nu",
+        // even when an expensive step (a new station) comes first and needs saving for
+        let remaining = balance;
+        const nowSteps = [];
         const list = document.createElement('div');
         steps.forEach((step, i) => {
           cumulative += step.cost;
-          const canNow = cumulative <= balance;
-          if (canNow) affordable = i + 1;
+          const canNow = step.cost <= remaining;
+          if (canNow) {
+            remaining -= step.cost;
+            nowSteps.push(i + 1);
+          }
 
           let title;
           let detail;
@@ -393,7 +403,7 @@
           row.style.cssText = `display:flex;justify-content:space-between;gap:6px;margin-bottom:6px;${canNow ? '' : 'opacity:.75'}`;
           row.dataset.mksStep = canNow ? 'now' : 'later'; // counted in the collapsed section header
           row.innerHTML = `<span>${i + 1}. ${title}<br><small class="text-muted">${formatCredits(step.cost)} · totaal ${formatCredits(cumulative)}${
-            canNow ? ' · <span class="text-success">kan nu</span>' : ''
+            canNow ? ' · <span class="text-success"><b>kan nu</b></span>' : ''
           }</small><br><small>${detail}</small></span>`;
           const right = document.createElement('span');
           right.style.whiteSpace = 'nowrap';
@@ -404,7 +414,9 @@
 
         const intro = document.createElement('div');
         intro.innerHTML = `<small class="text-muted">Saldo ${formatCredits(balance)} · ${
-          affordable ? `stap 1–${affordable} kun je nu doen` : 'spaar voor stap 1'
+          nowSteps.length
+            ? `nu te doen: stap ${nowSteps.join(', ')} (${formatCredits(balance - remaining)})${nowSteps[0] !== 1 ? ' · daarna sparen voor stap 1' : ''}`
+            : 'spaar voor stap 1'
         } · volgorde = meeste waarde per credit, rekening houdend met plekken, levels en personeel<br>Nieuwe post nu: ${formatCredits(
           stationBuildPrice(stationCount, true)
         )} (klein) / ${formatCredits(stationBuildPrice(stationCount, false))} (normaal) · elke post maakt de volgende duurder</small>${

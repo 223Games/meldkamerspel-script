@@ -3,7 +3,7 @@ const { JSDOM } = require('jsdom');
 const path = require('path');
 
 const code = require('fs').readFileSync(path.join(__dirname, '..', 'meldkamerspel.user.js'), 'utf8');
-const expose = 'window.__mks = { buildDevelopmentPlan, recordNotOwned, notOwnedStats, collectSpecialists };\n})();';
+const expose = 'window.__mks = { buildDevelopmentPlan, recordNotOwned, notOwnedStats, collectSpecialists, findStuckVehicles };\n})();';
 const body = code.replace(/\n\s*boot\(\);\s*\n\}\)\(\);\s*$/, `\n${expose}`);
 if (body === code) throw new Error('footer not found');
 
@@ -48,7 +48,13 @@ const specialists = m.collectSpecialists(data, [driebergen, amersfoort, werkhove
 const byName = Object.fromEntries(specialists.map((x) => [x.name, x]));
 const register = JSON.parse(w.localStorage.getItem('mks_specialists_v1') || '{}');
 
+// Stuck vehicles: seen on scene 13 days ago at another mission, now on scene again → not "329 hours"
+const now = Date.now();
+w.localStorage.setItem('mks_extras_status_since_v1', JSON.stringify({ 7: { fms: 4, target: 111, ts: now - 329 * 3600e3, seen: now - 329 * 3600e3 } }));
+const stuckNow = m.findStuckVehicles([{ id: 7, fms_real: 4, target_id: 222, caption: 'BRW 09-5034 TS' }]);
+
 const checks = {
+  noFalseStuckAlarm: stuckNow.length === 0,
   // Brandbase: rietkap on 09-06/37/58/61 → the built one (Werkhoven), not 09-51
   rietkapHomeWerkhoven: byName['DB-RI of RIA']?.home.station?.id === 3 && !!byName['DB-RI of RIA'].home.extension,
   // Voorlichter is a head-office specialist → own post closest to the VRU head office (Driebergen here)

@@ -5,7 +5,7 @@ const { JSDOM } = require('jsdom');
 const path = require('path');
 
 const code = require('fs').readFileSync(path.join(__dirname, '..', 'meldkamerspel.user.js'), 'utf8');
-const expose = 'window.__mks = { updateCoverageMap, returnSurplusVehicles, initDispatchAssistant, parseMissingVehicles };\n})();';
+const expose = 'window.__mks = { updateCoverageMap, returnSurplusVehicles, initDispatchAssistant, parseMissingVehicles, addWorklistButton, followWorklist };\n})();';
 const body = code.replace(/\n\s*boot\(\);\s*\n\}\)\(\);\s*$/, `\n${expose}`);
 if (body === code) throw new Error('footer not found');
 
@@ -38,7 +38,11 @@ const missionHtml = `<html><body><h1 id="missionH1">Brand in woning</h1>
     ${row(13, 'Team TS', 'TS 6/7', 99, 9000)}
   </tbody></table></body></html>`;
 
-const dom = new JSDOM('<meta name="csrf-token" content="x"><div id="mission_list"></div>', {
+const entry = (id, caption, state, typeId, missing = '') => `<div class="missionSideBarEntry" mission_id="${id}" mission_type_id="${typeId}" latitude="52.1" longitude="5.2">
+  <div id="mission_panel_${id}" class="mission_panel_${state}"><a id="mission_caption_${id}">${caption}</a><div id="mission_missing_${id}">${missing}</div></div></div>`;
+const dom = new JSDOM(`<meta name="csrf-token" content="x"><div id="mission_list">
+  ${entry('500', 'Huidige melding', 'red', 1)}${entry('501', 'Kleine brand', 'red', 1)}${entry('502', 'Grote brand', 'red', 2)}
+  ${entry('503', 'Bijna klaar', 'yellow', 1, 'Missende voertuigen: 1 Tankautospuit')}${entry('504', 'Loopt', 'green', 1)}</div>`, {
   url: 'https://www.meldkamerspel.com/', pretendToBeVisual: true, runScripts: 'outside-only',
 });
 const w = dom.window;
@@ -123,7 +127,23 @@ w.eval('const GM_getValue=window.GM_getValue,GM_setValue=window.GM_setValue,GM_r
   const brushSelected = [...brushWin.querySelectorAll('.vehicle_checkbox:checked')].map((c) => c.value);
   const brushText = brushWin.querySelector('.alert')?.textContent || '';
 
+  // Worklist: next = best of YOUR list (almost done first), not the current mission
+  w.localStorage.setItem('mks_extras_credits_v1', JSON.stringify({ ts: Date.now(), data: { 1: 500, 2: 5000 } }));
+  const wl = new JSDOM(`<form id="mission-form"><a class="btn btn-success alert_next" href="#"></a></form>`, { url: 'https://www.meldkamerspel.com/missions/500' }).window.document;
+  let gameNextClicked = false;
+  wl.querySelector('.alert_next').addEventListener('click', () => (gameNextClicked = true));
+  await w.__mks.addWorklistButton(wl);
+  const wlBtn = wl.getElementById('mks_worklist_btn');
+  const wlText = wlBtn?.textContent || '';
+  wlBtn?.dispatchEvent(new wl.defaultView.MouseEvent('click', { bubbles: true, cancelable: true }));
+  const pending = JSON.parse(w.sessionStorage.getItem('mks_worklist_next') || 'null');
+  // The game then loads ITS next mission (502); the worklist sends the window to 503 instead
+  const gameNextDoc = { location: { pathname: '/missions/502', href: '/missions/502' } };
+  const redirected = w.__mks.followWorklist(gameNextDoc);
+
   const checks = {
+    worklistPicksAlmostDone: wlText === '▶ Alarmeren → Bijna klaar' && gameNextClicked && pending?.id === '503',
+    worklistRedirects: redirected && gameNextDoc.location.href === '/missions/503' && !w.sessionStorage.getItem('mks_worklist_next'),
     brushRecognised: brushSelected.join() === '52' && !/brush/.test(brushText),
     natuurbrandMissingText: w.__mks.parseMissingVehicles('Missende voertuigen: 1 Natuurbrandbestrijdingsvoertuig, 2 Tankautospuiten').missing.brush_trucks === 1,
     mapkitRing: added.overlays.length === 1 && added.overlays[0].o.style.strokeColor === '#f9a825',

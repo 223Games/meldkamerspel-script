@@ -37,9 +37,19 @@
     return data;
   }
 
+  /** The main game page (also when Tampermonkey runs this copy inside a mission window). */
+  function mainDocument() {
+    if (isMainPage) return document;
+    try {
+      return window.parent?.document?.getElementById('mission_list') ? window.parent.document : document;
+    } catch (e) {
+      return document;
+    }
+  }
+
   /** Missions in one of the game's sidebar lists, read from the page itself. */
   function readMissionList(selector) {
-    return [...document.querySelectorAll(`${selector} .missionSideBarEntry`)]
+    return [...mainDocument().querySelectorAll(`${selector} .missionSideBarEntry`)]
       .filter((e) => !e.classList.contains('mission_deleted') && e.style.display !== 'none')
       .map((entry) => {
         const id = entry.getAttribute('mission_id');
@@ -69,6 +79,23 @@
         .map((s) => ({ s, km: distanceKm({ latitude: point.lat, longitude: point.lng }, s) }))
         .sort((a, b) => a.km - b.km)[0] || null
     );
+  }
+
+  /**
+   * Own missions that need you, best first: almost done (1 missing), then not dispatched yet
+   * (by credits), then more missing, then the rest. Shared by the priorities list and the worklist.
+   */
+  function rankOwnMissions(credits) {
+    const score = (m) => {
+      const missing = missingCount(m);
+      if (missing === 1) return 3e6 + (credits[m.typeId] || 0);
+      if (m.state === 'red') return 2e6 + (credits[m.typeId] || 0);
+      if (missing > 1) return 1e6 + (credits[m.typeId] || 0) / missing;
+      return credits[m.typeId] || 0;
+    };
+    return readMissionList('#mission_list')
+      .filter((m) => m.state !== 'green' || missingCount(m))
+      .sort((a, b) => score(b) - score(a));
   }
 
   /* ---------- 1 + 2: priorities (own missions) and team radar (shared missions) ---------- */
@@ -105,16 +132,7 @@
         };
         wrap.innerHTML = '';
 
-        // Own missions: almost done first, then not dispatched yet by credits, then the rest
-        const own = readMissionList('#mission_list');
-        const score = (m) => {
-          const missing = missingCount(m);
-          if (missing === 1) return 3e6 + (credits[m.typeId] || 0);
-          if (m.state === 'red') return 2e6 + (credits[m.typeId] || 0);
-          if (missing > 1) return 1e6 + (credits[m.typeId] || 0) / missing;
-          return credits[m.typeId] || 0;
-        };
-        const ranked = own.filter((m) => m.state !== 'green' || missingCount(m)).sort((a, b) => score(b) - score(a));
+        const ranked = rankOwnMissions(credits);
         wrap.append(heading(`🎯 Jouw meldingen (${ranked.length} vragen actie)`));
         if (!ranked.length) wrap.append(Object.assign(document.createElement('em'), { textContent: 'Alles loopt. 👍' }));
         ranked.slice(0, 12).forEach((m) => {
@@ -163,13 +181,23 @@
 
   const STUCK_LIMITS = { 6: 30 * 60e3, 4: 3 * 3600e3 }; // status 6 (buiten dienst) > 30 min, status 4 (ter plaatse) > 3 h
 
-  /** Tracks since when each vehicle has its current status (per browser). */
+  // Longer than this without a look (browser closed, other device): we can't know it stayed put
+  const STATUS_GAP_MS = 20 * 60e3;
+
+  /**
+   * Tracks since when each vehicle has its current status at its current target (per browser).
+   * Restarts when the status or target changes, or after a gap in observation: before, a vehicle seen
+   * on scene on day 1 and again on day 13 (at another mission) was reported as "329 hours on scene".
+   */
   function trackVehicleStatus(vehicles) {
     const since = extrasRead('status_since_v1', {});
+    const now = Date.now();
     const next = {};
     vehicles.forEach((v) => {
       const prev = since[v.id];
-      next[v.id] = prev && prev.fms === v.fms_real ? prev : { fms: v.fms_real, ts: Date.now() };
+      const same =
+        prev && prev.fms === v.fms_real && (prev.target ?? null) === (v.target_id ?? null) && now - (prev.seen || prev.ts) < STATUS_GAP_MS;
+      next[v.id] = same ? { ...prev, seen: now } : { fms: v.fms_real, target: v.target_id ?? null, ts: now, seen: now };
     });
     extrasWrite('status_since_v1', next);
     return next;
@@ -431,6 +459,11 @@
     ha.className = 'text-muted';
     ha.textContent = `Home Assistant: ${CONFIG.webhookId ? 'webhook ingesteld' : 'geen webhook (Tampermonkey-menu → Home Assistant instellen)'}`;
     wrap.append(ha);
+    const sync = document.createElement('small');
+    sync.className = 'text-muted';
+    sync.style.display = 'block';
+    sync.textContent = syncStatusText();
+    wrap.append(sync);
     return wrap;
   }
 

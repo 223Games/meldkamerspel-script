@@ -114,7 +114,7 @@
         else official[k] = v;
       });
     }
-    const stats = memRead(MEMORY_KEYS.types, {})[typeId] || null;
+    const stats = memoryTypesMerged()[typeId] || null; // all synced devices
     const min = { ...official };
     const learned = [];
     if (stats && stats.n >= 2) {
@@ -269,7 +269,7 @@
         const [fireTypes, aaos, buildings] = await Promise.all([loadFireMissionTypes(), loadAaoDefinitions(), fetchJson('/api/buildings')]);
         const stationCount = buildings.filter((b) => b.building_type === 0).length;
         const reqCache = Object.fromEntries(fireTypes.map((t) => [t.id, { r: t.r, c: t.c }]));
-        const memory = memRead(MEMORY_KEYS.types, {});
+        const memory = memoryTypesMerged(); // all synced devices
 
         const rows = fireTypes
           .filter((t) => t.stations <= stationCount)
