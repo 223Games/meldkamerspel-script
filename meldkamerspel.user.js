@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.7.0
+// @version      7.7.1
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -210,22 +210,21 @@
    * alarm-and-next submit; when the new window loads, it is redirected to the mission from your list.
    */
   async function addWorklistButton(doc) {
-    // The game has "Alarmeren en volgende" in the form and again in the fixed bar at the bottom
-    const gameNexts = [...doc.querySelectorAll('.alert_next')];
+    // Only next to the form's "Alarmeren en volgende": the fixed bar at the bottom keeps the game's own buttons
+    const gameNexts = [...doc.querySelectorAll('.alert_next')].slice(0, 1);
     const currentId = (doc.location.pathname.match(/\/missions\/(\d+)/) || [])[1];
     if (!gameNexts.length || !currentId || doc.documentElement.dataset.mksWorklist) return;
     doc.documentElement.dataset.mksWorklist = '1';
     const next = await worklistNext(currentId);
     if (!next) return;
-    gameNexts.forEach((gameNext, i) => {
+    gameNexts.forEach((gameNext) => {
       const btn = doc.createElement('a');
-      if (i === 0) btn.id = 'mks_worklist_btn';
+      btn.id = 'mks_worklist_btn';
       btn.href = '#';
       btn.className = `btn btn-primary${gameNext.classList.contains('btn-xs') ? ' btn-xs' : gameNext.classList.contains('btn-sm') ? ' btn-sm' : ''}`;
       btn.style.marginLeft = '4px';
       btn.title = `Alarmeren en daarna de volgende melding uit je eigen prioriteitenlijst openen: ${next.caption}`;
-      // Full text in the form, short in the bottom bar (little room there)
-      btn.textContent = i === 0 ? `▶ Alarmeren → ${next.caption}` : '▶ mijn lijst';
+      btn.textContent = `▶ Alarmeren → ${next.caption}`;
       btn.addEventListener('click', (e) => {
         e.preventDefault();
         const done = sessionRead(WORKLIST_DONE, {});
