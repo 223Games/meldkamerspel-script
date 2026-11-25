@@ -14,7 +14,7 @@ const busy = doc(`<div id="schooling">Alle klaslokalen zijn bezet.</div>
 <div id="schooling_running"><table><tr><th>Opleiding</th><th>Loopt?</th><th>Vrije plaatsen</th><th>Tijd resterend</th></tr>
 <tr><td><a href="/schoolings/2957739">Specialist Rietdakbrandbestrijder</a></td><td>Ja</td><td>0</td><td><a href="/schoolings/2957739/education/finish">Direct gereed (6 Coins)</a></td></tr></table></div>
 <div id="ausbauten">Extra klaslokaal 7 dagen 400.000 Credits 40 Coins</div>`);
-const free = doc(`<div id="schooling"><form><select><option>Specialist Rietdakbrandbestrijder</option></select></form></div><div id="schooling_running"></div><div id="ausbauten"></div>`);
+const free = doc(`<div id="schooling"><form><select name="education_select"><option value="">Selecteer een opleiding</option><option>Adviseur Gevaarlijke Stoffen (6 dagen)</option><option>Voorlichter (5 dagen)</option></select></form></div><div id="schooling_running"></div><div id="ausbauten"></div>`);
 const lesson = doc(`<h2>Specialist Rietdakbrandbestrijder</h2><p>De opleiding loopt tot ma 30 nov 2026 19:33:21 CET. Resterende tijd:</p>
 <table><tr><th>Naam</th><th>Opleiding</th><th>Meldkamer</th><th>Gebouw</th></tr>
 ${['A', 'B', 'C'].map((n) => `<tr><td>${n}</td><td></td><td>223Games</td><td>BRW 09-06 Werkhoven</td></tr>`).join('')}</table>`);
@@ -43,6 +43,7 @@ const checks = {
   busyAcademy: a.free === false && a.running.length === 1 && a.running[0].id === 2957739 && a.running[0].education === 'Specialist Rietdakbrandbestrijder',
   extraClassroomPrice: a.extraClassroomPrice === 400000,
   freeAcademy: m.parseAcademyDoc(free).free === true,
+  educationDays: m.parseAcademyDoc(free).days.Voorlichter === 5 && m.parseAcademyDoc(free).days['Adviseur Gevaarlijke Stoffen'] === 6,
   lessonEndAndPeople: l.endsAt === expectedEnd && l.people === 3 && l.station === 'BRW 09-06 Werkhoven',
   queueOrder: queue.map((q) => q.vehicle).join() === 'DB-VI,AGS,Voorlichter,DB-RI', // idle owned first, running last
   runningFlagged: queue[3].running?.endsAt === expectedEnd,

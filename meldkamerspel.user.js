@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.11.1
+// @version      7.12.0
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -5696,7 +5696,14 @@ ${rows
       });
     const ext = doc.querySelector('#ausbauten')?.textContent.replace(/\s+/g, ' ') || '';
     const price = ext.match(/Extra klaslokaal.*?(\d{1,3}(?:\.\d{3})+)\s*Credits/i)?.[1];
+    // "Adviseur Gevaarlijke Stoffen (6 dagen)": length of each education, shown by the game when a classroom is free
+    const days = {};
+    doc.querySelectorAll('#schooling select[name="education_select"] option').forEach((o) => {
+      const m = o.textContent.match(/^(.*?)\s*\((\d+) dagen\)/);
+      if (m) days[m[1].trim()] = Number(m[2]);
+    });
     return {
+      days,
       free: !/bezet/i.test(lessons) && lessons.length > 0,
       lessonsText: lessons.slice(0, 200),
       running,
@@ -5725,7 +5732,8 @@ ${rows
       for (const lesson of info.running) Object.assign(lesson, parseSchoolingDoc(await fetchDoc(`/schoolings/${lesson.id}`)));
       academies.push({ id: b.id, caption: b.caption.trim(), ...info });
     }
-    const value = { academies };
+    const days = Object.assign({}, ...academies.map((a) => a.days));
+    const value = { academies, days };
     academyStateCache = { ts: Date.now(), value };
     return value;
   }
@@ -5752,6 +5760,7 @@ ${rows
           people: Math.max(1, sp.shop?.minCrew || 1),
           station: sp.home.station || sp.ownedAt[0] || null,
           running: lesson || null,
+          days: academyState?.days?.[sp.education] || null,
           score: (owned ? 3000 : 0) + (sp.missions || 0) * 100 + (sp.unlocked || 0) * 10,
         };
       })
@@ -5768,6 +5777,7 @@ ${rows
         people: Math.max(1, x.minCrew || 1),
         station: null,
         running: running.get(x.education) || null,
+        days: academyState?.days?.[x.education] || null,
         score: x.missed * 100 + x.count * 10,
       }));
     return [...fromSpecialists, ...fromExtensions].sort((a, b) => !!a.running - !!b.running || b.score - a.score);
@@ -5855,7 +5865,7 @@ ${rows
             `${q.running ? '▶️' : `<b>${++n}.</b>`} <b>${escapeHtml(q.education)}</b> <small class="text-muted">· voor ${escapeHtml(q.vehicle)}</small><br><small>${
               q.running
                 ? `loopt al, klaar ${when(q.running.endsAt)}`
-                : `${q.people} personen${q.station ? ` van <b>${short(q.station.caption)}</b>` : ''}${why.length ? ` · ${why.join(' · ')}` : ''}`
+                : `${q.days ? `${q.days} dagen · ` : ''}${q.people} personen${q.station ? ` van <b>${short(q.station.caption)}</b>` : ''}${why.length ? ` · ${why.join(' · ')}` : ''}`
             }</small>`,
             q.running ? null : 'opt'
           );
@@ -5863,7 +5873,7 @@ ${rows
         const foot = document.createElement('small');
         foot.className = 'text-muted';
         foot.textContent =
-          'Kies bij het starten personeel van de aangegeven post: de opgeleiden kunnen dan direct op hun voertuig worden gekoppeld (zie Herverdelen). Duur en kosten per opleiding toont het spel pas bij een vrij klaslokaal.';
+          'Kies bij het starten personeel van de aangegeven post: de opgeleiden kunnen dan direct op hun voertuig worden gekoppeld (zie Herverdelen). Per opleiding kun je maximaal 10 personen tegelijk laten meedoen; tijdens de opleiding zijn zij niet inzetbaar.';
         wrap.append(foot);
       } catch (e) {
         console.error('[MKS→HA] Training queue failed', e);
