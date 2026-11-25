@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.13.0
+// @version      7.13.1
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -675,7 +675,11 @@
     hazmat_vehicles: { label: 'AGS', caption: /^DA-AGS$/i, missing: /Adviseurs?\s*Gevaarlijke\s*Stoffen/i },
     elw3: { label: 'CO', caption: /^CO$/i, missing: /Commandowagen|Commandovoertuig/i },
     gwmess: { label: 'VEB', caption: /^DB-VEB$/i, missing: /Verkenningseenhe/i },
-    mobile_air_vehicles: { label: 'AB', caption: /^AB$/i, missing: /Adembescherming/i },
+    // Matched on type id too (5 = AB): the row's type text is not always the bare "AB"
+    mobile_air_vehicles: { label: 'AB', caption: /(^|\s)AB$/i, typeIds: ['5'], missing: /Adembescherming/i },
+    // Specialist: the DB-RI (153) tows the RIA trailer (154). The trailer is a separate row, ticked together with its tractor.
+    thatched_firefighting: { label: 'DB-RI', caption: /^DB-RI$/i, typeIds: ['153'], missing: /Riet/i, withTypeIds: ['154'] },
+    livestock_hoist: { label: 'DB-VI', caption: /^DB-VI$/i, typeIds: ['155'], missing: /Vee(redd|hef)|Dierhef/i },
     battalion_chief_vehicles: {
       label: 'OvD-B',
       caption: /OVD/i,
@@ -931,6 +935,19 @@
       );
     }
 
+    /** Ticks the trailer row(s) that belong to a just-selected tractor (same building), e.g. RIA behind the DB-RI. */
+    function tickTowedRows(key, row) {
+      const withTypes = CATEGORIES[key].withTypeIds;
+      if (!withTypes) return;
+      doc.querySelectorAll('#vehicle_show_table_body_all tr.vehicle_select_table_tr').forEach((other) => {
+        const box = other.querySelector('.vehicle_checkbox');
+        if (!box || box.checked || box.disabled) return;
+        if (!withTypes.includes(box.getAttribute('vehicle_type_id'))) return;
+        if (other.getAttribute('building') !== row.getAttribute('building')) return;
+        box.click();
+      });
+    }
+
     function selectVehicles(needed) {
       const rows = [...doc.querySelectorAll('#vehicle_show_table_body_all tr.vehicle_select_table_tr')].sort(
         (a, b) => parseFloat(a.dataset.distance || 999) - parseFloat(b.dataset.distance || 999),
@@ -952,6 +969,7 @@
           if (!rowMatchesCategory(key, row)) continue;
 
           checkbox.click(); // click (not .checked) so the game updates its own counters
+          tickTowedRows(key, row);
           remaining--;
           selected[key] = (selected[key] || 0) + 1;
           Object.keys(needed).forEach((other) => {

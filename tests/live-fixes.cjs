@@ -152,7 +152,20 @@ w.eval('const GM_getValue=window.GM_getValue,GM_setValue=window.GM_setValue,GM_r
   w.__gm.opt_eventPriority = false;
   const eventOff = await nextCaption();
 
+  // Rietkap mission: AB (type 5), DB-RI (153) and its RIA trailer (154, separate row) must all end up ticked
+  const row = (type, id, typeId, building) => `<tr class="vehicle_select_table_tr" vehicle_type="${type}" building="${building}" data-distance="3"><td><input type="checkbox" class="vehicle_checkbox" vehicle_type_id="${typeId}" value="${id}"></td></tr>`;
+  const thatchWin = new JSDOM(`<a id="mission_help" href="/einsaetze/4"></a><h1 id="missionH1">Rietkapbrand</h1>
+    <table id="mission_vehicle_at_mission"><tbody></tbody></table><table id="mission_vehicle_driving"><tbody></tbody></table>
+    <form id="mission-form"><table><tbody id="vehicle_show_table_body_all">
+      ${row('AB', 61, 5, 'BRW 09-18 Eem')}${row('DB-RI', 62, 153, 'BRW 09-06 Werkhoven')}${row('RIA', 63, 154, 'BRW 09-06 Werkhoven')}${row('RIA', 64, 154, 'BRW 09-99 Elders')}
+    </tbody></table></form>`, { url: 'https://www.meldkamerspel.com/missions/110' }).window.document;
+  w.localStorage.setItem('mks_ha_mission_types_v1', JSON.stringify({ ts: Date.now(), data: { 4: { r: { mobile_air_vehicles: 1, thatched_firefighting: 1 }, c: {} } } }));
+  w.__mks.initDispatchAssistant(thatchWin);
+  await new Promise((r) => setTimeout(r, 1500));
+  const thatchSelected = [...thatchWin.querySelectorAll('.vehicle_checkbox:checked')].map((c) => c.value).sort();
+
   const checks = {
+    abAndRietkapSelected: thatchSelected.join() === '61,62,63',
     eventsFirst: eventFirst === '▶ Alarmeren → Sinterklaas pakjes bezorgen' && eventOff === '▶ Alarmeren → Bijna klaar',
     worklistPicksAlmostDone: wlText === '▶ Alarmeren → Bijna klaar' && gameNextClicked && pending?.id === '503',
     worklistRedirects: redirected && gameNextDoc.location.href === '/missions/503' && !w.sessionStorage.getItem('mks_worklist_next'),
@@ -168,6 +181,7 @@ w.eval('const GM_getValue=window.GM_getValue,GM_setValue=window.GM_setValue,GM_r
     queuedCountedInWindow: selectedTs === 0 && /In wachtrij hierheen/.test(panelText) && /2× TS/.test(panelText),
   };
   console.log(checks, errors.length ? errors : 'no errors');
+  if (!checks.abAndRietkapSelected) console.log('thatch selected', thatchSelected, thatchWin.querySelector('.alert')?.textContent);
   if (!checks.brushRecognised) console.log('brush selected', brushSelected, 'panel:', brushText);
   if (!checks.queuedWaterCounted) console.log('water selected', waterSelected, 'panel:', waterText);
   if (!checks.queuedCountedInWindow) console.log('selected', selectedTs, 'panel:', panelText);
