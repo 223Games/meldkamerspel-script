@@ -108,6 +108,13 @@
     return trained ? { station: trained.st, why: `${trained.n} opgeleid` } : { station: null, why: 'nog geen locaties: speel even door' };
   }
 
+  /** People trained in a long education name ("Specialist Rietdakbrandbestrijder"); null when the vehicle needs none. */
+  function trainedCount(data, education) {
+    if (!education) return null;
+    const key = data.keyOf ? data.keyOf(education) : null;
+    return key ? (data.people || []).filter((p) => p.keys.includes(key)).length : 0; // key unknown = nobody has it yet
+  }
+
   /**
    * All specialists worth knowing about:
    * - missed: asked for in your missions while you had none (14 days, with locations);
@@ -143,6 +150,12 @@
         });
       });
 
+    // Specialist vehicles you already own that need an education (e.g. DB-RI): untrained crew = a vehicle that stays home
+    (data.specialistVehicles || []).forEach(({ vehicle, info }) => {
+      if (list.some((x) => x.shop?.typeId === vehicle.vehicle_type)) return;
+      list.push({ name: info.name, missions: 0, at: [], shop: { typeId: vehicle.vehicle_type, ...info }, education: info.education, source: 'owned' });
+    });
+
     // Basic vehicles every post has in the VRU layout (OvD, TS, AL, HV…) are not specialists,
     // unless the VRU keeps them at specific posts (AB, NB, waterongevallen…)
     const baseTypes = new Set(Object.values(VRU_STATIONS).flatMap(([, vehiclesRef]) => vehiclesRef.map(([, t]) => t)));
@@ -159,6 +172,7 @@
       sp.ownedAt = vehicles.filter((v) => typeIds.includes(v.vehicle_type)).map((v) => stations.find((s) => s.id === v.building_id)).filter(Boolean);
       sp.home = specialistHome(sp, stations, data.stationRows);
       sp.allowed = !sp.shop?.minStations || sp.shop.minStations <= stations.length;
+      sp.trained = trainedCount(data, sp.education);
       const reg = register[sp.name] || { firstSeen: now };
       sp.isNew = now - reg.firstSeen < 3 * 86400e3;
       register[sp.name] = { ...reg, lastSeen: now, typeId: typeId ?? null, home: sp.home.station?.caption?.trim() || reg.home || null };
@@ -170,6 +184,35 @@
     }
     // Most missed first, then most missions unlocked
     return list.sort((a, b) => b.missions - a.missions || (b.unlocked || 0) - (a.unlocked || 0));
+  }
+
+  /** Every education the vehicle shop asks for: which vehicles need it, how many you own, how many people are trained. */
+  function renderEducationCatalog(data, vehicles) {
+    const byEdu = {};
+    Object.entries(data.typeInfo || {}).forEach(([typeId, info]) => {
+      if (!info.education) return;
+      (byEdu[info.education] ||= []).push({ typeId: Number(typeId), name: info.name });
+    });
+    const rows = Object.entries(byEdu)
+      .map(([education, types]) => ({
+        education,
+        types,
+        trained: trainedCount(data, education),
+        owned: vehicles.filter((v) => types.some((t) => t.typeId === v.vehicle_type)).length,
+      }))
+      .sort((a, b) => b.owned - a.owned || b.trained - a.trained || a.education.localeCompare(b.education));
+    const details = document.createElement('details');
+    details.style.marginTop = '6px';
+    details.innerHTML = `<summary><b>🎓 Alle opleidingen in het spel (${rows.length})</b> <small class="text-muted">· ${rows.filter((r) => r.trained).length} heb je opgeleid personeel voor</small></summary>${rows
+      .map(
+        (r) =>
+          `<div><small>${r.trained ? '🟢' : r.owned ? '🔴' : '⚪'} <b>${escapeHtml(r.education)}</b> · ${r.trained} opgeleid · ${r.owned}× voertuig in bezit<br><span class="text-muted">${r.types
+            .slice(0, 4)
+            .map((t) => escapeHtml(t.name.split(' ')[0]))
+            .join(', ')}${r.types.length > 4 ? '…' : ''}</span></small></div>`
+      )
+      .join('')}`;
+    return details;
   }
 
   async function renderSpecialists() {
@@ -191,13 +234,19 @@
           row.style.cssText = 'display:flex;justify-content:space-between;gap:6px;margin-bottom:6px';
           const owned = sp.ownedAt.length;
           // Action = missed and not owned (or not at its home); option = could unlock missions
-          const needsAction = sp.missions > 0 && !owned;
+          const untrained = sp.education && !sp.trained; // nobody can crew it
+          const needsAction = (sp.missions > 0 && !owned) || (owned && untrained) || (sp.missions > 0 && untrained);
           row.dataset.mksSpecialist = needsAction ? 'act' : owned ? 'ok' : 'opt';
           const facts = [];
           if (sp.missions) facts.push(`<b>${sp.missions}× gemist</b> (14 d)`);
           if (sp.unlocked) facts.push(`${sp.unlocked} meldingstype(s)`);
           if (sp.shop) facts.push(`winkel: ${escapeHtml(sp.shop.name)}${sp.shop.price ? ` (${formatCredits(sp.shop.price)})` : ''}`);
-          if (sp.education) facts.push(`opleiding <i>${escapeHtml(sp.education)}</i>`);
+          if (sp.education)
+            facts.push(
+              `opleiding <i>${escapeHtml(sp.education)}</i>: ${
+                sp.trained ? `<b>${sp.trained}</b> opgeleid` : '<b class="text-danger">niemand opgeleid</b> — eerst opleiden (school/academie)'
+              }`
+            );
           if (!sp.allowed) facts.push(`pas vanaf ${sp.shop.minStations} posten`);
           if (sp.home.extension) facts.push(`eerst uitbreiding ${escapeHtml(sp.home.extension.name)} (${formatCredits(sp.home.extension.price)})`);
           const home = sp.home.station
@@ -208,7 +257,8 @@
             : needsAction
               ? '❌ niet in je korps'
               : '➖ nog niet in bezit';
-          row.innerHTML = `<span>${needsAction ? '🔴' : owned ? '🟢' : '⚪'} <b>${escapeHtml(sp.name)}</b>${
+          const idle = owned && untrained ? ' <span class="label label-danger" title="Zonder opgeleid personeel rijdt hij niet uit">staat stil</span>' : '';
+          row.innerHTML = `<span>${needsAction ? '🔴' : owned ? '🟢' : '⚪'} <b>${escapeHtml(sp.name)}</b>${idle}${
             sp.isNew ? ' <span class="label label-info">nieuw</span>' : ''
           }<br><small>${have} · ${facts.join(' · ')}</small><br><small>${home}</small></span>`;
           const right = document.createElement('span');
@@ -229,6 +279,7 @@
           row.append(right);
           wrap.append(row);
         });
+        wrap.append(renderEducationCatalog(data, vehicles));
         const foot = document.createElement('small');
         foot.className = 'text-muted';
         foot.textContent =

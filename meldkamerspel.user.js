@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.7.2
+// @version      7.8.0
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -3375,8 +3375,8 @@
   // `match`: recognises the extension's vehicle in "Missende voertuigen" texts / requirement keys you missed
   const PLAN_EXTENSIONS = [
     // Real VRU posts (Brandbase regio 09, Nov 2026): Rietdak Brandbestrijdingsteamvoertuig / Veetakel Installatie
-    { typeId: 26, key: 'thatched_fire', name: 'Rietkapbrandbestrijding', price: 150000, days: 5, vehicle: 'DB-RI of RIA', stations: ['06', '37', '58', '61'], match: /riet|thatch|\bDB-RI\b|\bRIA\b/i },
-    { typeId: 27, key: 'livestock_fire', name: 'Veetakels', price: 150000, days: 5, vehicle: 'DB-VI', stations: ['21', '23', '29'], match: /veetakel|livestock|\bDB-VI\b/i },
+    { typeId: 26, key: 'thatched_fire', name: 'Rietkapbrandbestrijding', price: 150000, days: 5, vehicle: 'DB-RI of RIA', vehicleTypeId: 153, stations: ['06', '37', '58', '61'], match: /riet|thatch|\bDB-RI\b|\bRIA\b/i },
+    { typeId: 27, key: 'livestock_fire', name: 'Veetakels', price: 150000, days: 5, vehicle: 'DB-VI', vehicleTypeId: 155, stations: ['21', '23', '29'], match: /veetakel|livestock|\bDB-VI\b/i },
   ];
 
   // Own fire academy: train specialists yourself instead of waiting for the team academy
@@ -3480,7 +3480,25 @@
 
     const notOwned = notOwnedStats();
     const academy = data.academy || null; // { typeId, name, owned }
-    const pendingTraining = specialtyRows.filter((sp) => sp.unlocked.length && !sp.owned && sp.info?.education && !sp.trained);
+
+    // Is anyone trained for the vehicle an extension brings? Without them the vehicle never leaves the station
+    const educationOf = (ext) => {
+      const education = data.typeInfo?.[ext.vehicleTypeId]?.education;
+      if (!education) return null;
+      const key = data.keyOf ? data.keyOf(education) : null;
+      return { education, trained: key ? (data.people || []).filter((p) => p.keys.includes(key)).length : 0 };
+    };
+    const extensionTraining = PLAN_EXTENSIONS.map((ext) => ({ ext, edu: educationOf(ext), stats: data.extensionStats?.[ext.key] }))
+      .filter((x) => x.edu && !x.edu.trained && ((x.stats?.count || 0) || missesMatching(notOwned, x.ext.match)))
+      .map((x) => ({
+        label: x.ext.name,
+        info: { education: x.edu.education, minCrew: data.typeInfo[x.ext.vehicleTypeId].minCrew, maxCrew: data.typeInfo[x.ext.vehicleTypeId].maxCrew },
+        unlocked: new Array(x.stats?.count || 1).fill(0),
+        extension: true,
+      }));
+    const pendingTraining = specialtyRows
+      .filter((sp) => sp.unlocked.length && !sp.owned && sp.info?.education && !sp.trained)
+      .concat(extensionTraining);
 
     const steps = [];
     const plannedSpecialties = new Set();
@@ -3537,7 +3555,9 @@
         const cost = ext.price + DEFAULT_VEHICLE_PRICE; // + its vehicle
         // Missions you actually get but can't finish weigh most: each one is lost credits
         const value = 6 + stats.count * 2.5 * Math.min(1.5, stats.avgCredits / 1500) + Math.min(40, missed * 4);
-        candidates.push({ kind: 'extension', ext, stats, missed, s: station, cost, value });
+        const edu = educationOf(ext);
+        // Nobody trained yet: the vehicle would stand idle, so train first (academy/training list) and rank it lower
+        candidates.push({ kind: 'extension', ext, stats, missed, s: station, cost, value: edu && !edu.trained ? value * 0.5 : value, edu });
       });
 
       // 3b. Own academy: when specialists wait for training (each one unlocks missions)
@@ -3563,7 +3583,13 @@
       }
       if (pick.kind === 'extension') {
         pick.ext.planned = true;
-        steps.push({ ...pick, personnel: { ok: true, text: `daarna ${pick.ext.vehicle} kopen (eigen parkeerplek)` } });
+        const untrained = pick.edu && !pick.edu.trained;
+        steps.push({
+          ...pick,
+          personnel: untrained
+            ? { ok: false, text: `niemand opgeleid als ${pick.edu.education}: eerst opleiden, anders rijdt de ${pick.ext.vehicle} niet uit` }
+            : { ok: true, text: `daarna ${pick.ext.vehicle} kopen (eigen parkeerplek)` },
+        });
         continue;
       }
       if (pick.kind === 'station') {
@@ -3591,7 +3617,8 @@
     // Training needed before some specialists can be bought
     const training = specialtyRows
       .filter((sp) => sp.unlocked.length && !sp.owned && sp.info?.education && !sp.trained)
-      .map((sp) => ({ sp, education: sp.info.education, need: Math.max(1, sp.info.minCrew || 0), full: sp.info.maxCrew }));
+      .map((sp) => ({ sp, education: sp.info.education, need: Math.max(1, sp.info.minCrew || 0), full: sp.info.maxCrew }))
+      .concat(extensionTraining.map((sp) => ({ sp, education: sp.info.education, need: Math.max(1, sp.info.minCrew || 0), full: sp.info.maxCrew })));
 
     // Extensions that are built but switched off
     const notes = [];
@@ -3619,7 +3646,12 @@
               e.type_id === 15
                 ? ': pas aanzetten als je een natuurbrandvoertuig (DA-LA-NB, VW-NB of NBH) hebt'
                 : PLAN_EXTENSIONS.some((x) => x.typeId === e.type_id)
-                  ? ' — <b>bewust?</b> Een uitgezette uitbreiding doet niet mee; aanzetten via het gebouw → uitbreidingen'
+                  ? (() => {
+                      const edu = educationOf(PLAN_EXTENSIONS.find((x) => x.typeId === e.type_id));
+                      return edu && !edu.trained
+                        ? ` — nog <b>niemand opgeleid als ${escapeHtml(edu.education)}</b>: eerst opleiden, dan pas aanzetten (anders rijdt het voertuig niet uit)`
+                        : ' — <b>bewust?</b> Een uitgezette uitbreiding doet niet mee; aanzetten via het gebouw → uitbreidingen';
+                    })()
                   : ''
             }`
           );
@@ -3725,7 +3757,7 @@
                   step.stats.names.slice(0, 3).join(', ')
                 )}…)`
               );
-            detail = `${why.join(' · ')} · 👷 ${escapeHtml(step.personnel.text)}`;
+            detail = `${why.join(' · ')} · ${step.personnel.ok ? '👷' : '⚠️'} ${escapeHtml(step.personnel.text)}`;
             buttons.push(linkButton('Gebouw', open(`/buildings/${step.s.station.id}`)));
           } else if (step.kind === 'academy') {
             title = `🎓 Bouw een eigen <b>${escapeHtml(data.academy.name)}</b>`;
@@ -5075,6 +5107,13 @@ ${rows
     return trained ? { station: trained.st, why: `${trained.n} opgeleid` } : { station: null, why: 'nog geen locaties: speel even door' };
   }
 
+  /** People trained in a long education name ("Specialist Rietdakbrandbestrijder"); null when the vehicle needs none. */
+  function trainedCount(data, education) {
+    if (!education) return null;
+    const key = data.keyOf ? data.keyOf(education) : null;
+    return key ? (data.people || []).filter((p) => p.keys.includes(key)).length : 0; // key unknown = nobody has it yet
+  }
+
   /**
    * All specialists worth knowing about:
    * - missed: asked for in your missions while you had none (14 days, with locations);
@@ -5110,6 +5149,12 @@ ${rows
         });
       });
 
+    // Specialist vehicles you already own that need an education (e.g. DB-RI): untrained crew = a vehicle that stays home
+    (data.specialistVehicles || []).forEach(({ vehicle, info }) => {
+      if (list.some((x) => x.shop?.typeId === vehicle.vehicle_type)) return;
+      list.push({ name: info.name, missions: 0, at: [], shop: { typeId: vehicle.vehicle_type, ...info }, education: info.education, source: 'owned' });
+    });
+
     // Basic vehicles every post has in the VRU layout (OvD, TS, AL, HV…) are not specialists,
     // unless the VRU keeps them at specific posts (AB, NB, waterongevallen…)
     const baseTypes = new Set(Object.values(VRU_STATIONS).flatMap(([, vehiclesRef]) => vehiclesRef.map(([, t]) => t)));
@@ -5126,6 +5171,7 @@ ${rows
       sp.ownedAt = vehicles.filter((v) => typeIds.includes(v.vehicle_type)).map((v) => stations.find((s) => s.id === v.building_id)).filter(Boolean);
       sp.home = specialistHome(sp, stations, data.stationRows);
       sp.allowed = !sp.shop?.minStations || sp.shop.minStations <= stations.length;
+      sp.trained = trainedCount(data, sp.education);
       const reg = register[sp.name] || { firstSeen: now };
       sp.isNew = now - reg.firstSeen < 3 * 86400e3;
       register[sp.name] = { ...reg, lastSeen: now, typeId: typeId ?? null, home: sp.home.station?.caption?.trim() || reg.home || null };
@@ -5137,6 +5183,35 @@ ${rows
     }
     // Most missed first, then most missions unlocked
     return list.sort((a, b) => b.missions - a.missions || (b.unlocked || 0) - (a.unlocked || 0));
+  }
+
+  /** Every education the vehicle shop asks for: which vehicles need it, how many you own, how many people are trained. */
+  function renderEducationCatalog(data, vehicles) {
+    const byEdu = {};
+    Object.entries(data.typeInfo || {}).forEach(([typeId, info]) => {
+      if (!info.education) return;
+      (byEdu[info.education] ||= []).push({ typeId: Number(typeId), name: info.name });
+    });
+    const rows = Object.entries(byEdu)
+      .map(([education, types]) => ({
+        education,
+        types,
+        trained: trainedCount(data, education),
+        owned: vehicles.filter((v) => types.some((t) => t.typeId === v.vehicle_type)).length,
+      }))
+      .sort((a, b) => b.owned - a.owned || b.trained - a.trained || a.education.localeCompare(b.education));
+    const details = document.createElement('details');
+    details.style.marginTop = '6px';
+    details.innerHTML = `<summary><b>🎓 Alle opleidingen in het spel (${rows.length})</b> <small class="text-muted">· ${rows.filter((r) => r.trained).length} heb je opgeleid personeel voor</small></summary>${rows
+      .map(
+        (r) =>
+          `<div><small>${r.trained ? '🟢' : r.owned ? '🔴' : '⚪'} <b>${escapeHtml(r.education)}</b> · ${r.trained} opgeleid · ${r.owned}× voertuig in bezit<br><span class="text-muted">${r.types
+            .slice(0, 4)
+            .map((t) => escapeHtml(t.name.split(' ')[0]))
+            .join(', ')}${r.types.length > 4 ? '…' : ''}</span></small></div>`
+      )
+      .join('')}`;
+    return details;
   }
 
   async function renderSpecialists() {
@@ -5158,13 +5233,19 @@ ${rows
           row.style.cssText = 'display:flex;justify-content:space-between;gap:6px;margin-bottom:6px';
           const owned = sp.ownedAt.length;
           // Action = missed and not owned (or not at its home); option = could unlock missions
-          const needsAction = sp.missions > 0 && !owned;
+          const untrained = sp.education && !sp.trained; // nobody can crew it
+          const needsAction = (sp.missions > 0 && !owned) || (owned && untrained) || (sp.missions > 0 && untrained);
           row.dataset.mksSpecialist = needsAction ? 'act' : owned ? 'ok' : 'opt';
           const facts = [];
           if (sp.missions) facts.push(`<b>${sp.missions}× gemist</b> (14 d)`);
           if (sp.unlocked) facts.push(`${sp.unlocked} meldingstype(s)`);
           if (sp.shop) facts.push(`winkel: ${escapeHtml(sp.shop.name)}${sp.shop.price ? ` (${formatCredits(sp.shop.price)})` : ''}`);
-          if (sp.education) facts.push(`opleiding <i>${escapeHtml(sp.education)}</i>`);
+          if (sp.education)
+            facts.push(
+              `opleiding <i>${escapeHtml(sp.education)}</i>: ${
+                sp.trained ? `<b>${sp.trained}</b> opgeleid` : '<b class="text-danger">niemand opgeleid</b> — eerst opleiden (school/academie)'
+              }`
+            );
           if (!sp.allowed) facts.push(`pas vanaf ${sp.shop.minStations} posten`);
           if (sp.home.extension) facts.push(`eerst uitbreiding ${escapeHtml(sp.home.extension.name)} (${formatCredits(sp.home.extension.price)})`);
           const home = sp.home.station
@@ -5175,7 +5256,8 @@ ${rows
             : needsAction
               ? '❌ niet in je korps'
               : '➖ nog niet in bezit';
-          row.innerHTML = `<span>${needsAction ? '🔴' : owned ? '🟢' : '⚪'} <b>${escapeHtml(sp.name)}</b>${
+          const idle = owned && untrained ? ' <span class="label label-danger" title="Zonder opgeleid personeel rijdt hij niet uit">staat stil</span>' : '';
+          row.innerHTML = `<span>${needsAction ? '🔴' : owned ? '🟢' : '⚪'} <b>${escapeHtml(sp.name)}</b>${idle}${
             sp.isNew ? ' <span class="label label-info">nieuw</span>' : ''
           }<br><small>${have} · ${facts.join(' · ')}</small><br><small>${home}</small></span>`;
           const right = document.createElement('span');
@@ -5196,6 +5278,7 @@ ${rows
           row.append(right);
           wrap.append(row);
         });
+        wrap.append(renderEducationCatalog(data, vehicles));
         const foot = document.createElement('small');
         foot.className = 'text-muted';
         foot.textContent =

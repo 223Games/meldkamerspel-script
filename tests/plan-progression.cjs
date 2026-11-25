@@ -26,7 +26,12 @@ const stats = m.notOwnedStats();
 const station = { id: 1, caption: 'BRW 09-51 Driebergen-Rijsenburg', building_type: 0, level: 3, extensions: [], small_building: false, hiring_phase: 0 };
 const staff = Array.from({ length: 20 }, () => ({ keys: [] }));
 const data = {
-  typeInfo: { 56: { name: 'DA-VL Voorlichter', education: 'Voorlichter', minStations: 0 } },
+  typeInfo: {
+    56: { name: 'DA-VL Voorlichter', education: 'Voorlichter', minStations: 0 },
+    153: { name: 'DB-RI Dienstbus – Rietdakbrandbestrijding', education: 'Specialist Rietdakbrandbestrijder', minCrew: 2, maxCrew: 4 },
+  },
+  people: staff,
+  keyOf: (name) => ({ 'Specialist Rietdakbrandbestrijder': 'riet' })[name] || null,
   vehicles: [],
   stationRows: [{ station, own: [], staff, crewNeeded: 6 }],
   specialtyRows: [
@@ -38,6 +43,14 @@ const data = {
 const plan = m.buildDevelopmentPlan(data, [station], 15);
 const ext = plan.steps.find((s) => s.kind === 'extension' && s.ext.key === 'thatched_fire');
 const academy = plan.steps.find((s) => s.kind === 'academy');
+// Same plan once somebody is trained for rietkap: no training warning, extension is ready to go
+const trainedData = { ...data, people: [{ keys: ['riet'] }, ...staff] };
+const trainedPlan = m.buildDevelopmentPlan(trainedData, [station], 15);
+const trainedExt = trainedPlan.steps.find((s) => s.kind === 'extension' && s.ext.key === 'thatched_fire');
+// Rietkap built but switched off + nobody trained: the note says train first, not just "bewust?"
+const offStation = { ...station, extensions: [{ type_id: 26, caption: 'Rietkapbrandbestrijding', available: true, enabled: false }] };
+const offNotes = m.buildDevelopmentPlan(data, [offStation], 15).notes.join('\n');
+const offNotesTrained = m.buildDevelopmentPlan(trainedData, [offStation], 15).notes.join('\n');
 const noteText = plan.notes.join('\n');
 
 // Specialists: register + home station
@@ -65,6 +78,9 @@ const checks = {
   countsMissionsOnce: stats['DB-RI of RIA'] === 5 && stats.Voorlichter === 2,
   rietkapAdvised: !!ext && ext.missed === 5 && ext.s.station.id === 1,
   academyAdvised: !!academy && academy.trainings[0].label === 'AGS',
+  rietkapNeedsTraining: !!ext && ext.personnel.ok === false && /niemand opgeleid als Specialist Rietdakbrandbestrijder/.test(ext.personnel.text) && plan.training.some((t) => t.education === 'Specialist Rietdakbrandbestrijder'),
+  rietkapReadyWhenTrained: !!trainedExt && trainedExt.personnel.ok === true && !trainedPlan.training.some((t) => t.education === 'Specialist Rietdakbrandbestrijder'),
+  disabledNoteSaysTrainFirst: /niemand opgeleid als Specialist Rietdakbrandbestrijder/.test(offNotes) && !/bewust/.test(offNotes) && /bewust/.test(offNotesTrained),
   otherMissesListed: /Voorlichter 2× → DA-VL Voorlichter, opleiding <i>Voorlichter<\/i>/.test(noteText),
 };
 console.log(checks);
