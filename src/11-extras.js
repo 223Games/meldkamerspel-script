@@ -19,6 +19,25 @@
     }
   };
 
+  /**
+   * Event missions (Sinterklaas, Herfst…) are the mission types with a limited date window in the game's catalog.
+   * Map: mission type id -> end of the event (ms). Cached 6 h; refreshed in the background.
+   */
+  let eventTypeEnds = new Map(Object.entries(extrasRead('event_types_v1', { map: {} }).map));
+  async function refreshEventTypes() {
+    const cached = extrasRead('event_types_v1', { ts: 0, map: {} });
+    if (Date.now() - cached.ts < 6 * 3600e3) return;
+    const now = Date.now();
+    const map = {};
+    (await loadMissionCatalog()).forEach((t) => {
+      const start = Date.parse(t.additional?.date_start);
+      const end = Date.parse(t.additional?.date_end);
+      if (end && start <= now && end >= now) map[String(t.id)] = end;
+    });
+    extrasWrite('event_types_v1', { ts: now, map });
+    eventTypeEnds = new Map(Object.entries(map));
+  }
+
   const FREE_FMS = new Set([1, 2]); // 1 = free on radio, 2 = at station
   const isFireEngine = (typeId) => ['TS', 'TST'].includes(labelOf(typeId));
 
@@ -52,6 +71,7 @@
    * an event list/filter type, an event class or attribute, or a keyword from the settings in the caption.
    */
   function isEventEntry(entry, caption) {
+    if (eventTypeEnds.has(String(entry.getAttribute('mission_type_id')))) return true;
     const type = entry.getAttribute('data-mission-type-filter') || '';
     if (type && !['emergency', 'sicherheitswache', 'krankentransporte'].includes(type)) return true;
     if (/event/i.test(entry.parentElement?.id || '') || /event/i.test(entry.className) || entry.hasAttribute('data-event')) return true;
@@ -318,7 +338,8 @@
 
   function recordCompletion(typeId) {
     const entries = extrasRead('completed_v1', []);
-    entries.push({ ts: Date.now(), typeId: typeId || null });
+    const ev = eventTypeEnds.get(String(typeId)) || null; // set for event missions: lets the task panel compare with the game's counter
+    entries.push({ ts: Date.now(), typeId: typeId || null, ...(ev ? { ev } : {}) });
     extrasWrite('completed_v1', entries.filter((e) => Date.now() - e.ts < 30 * 86400e3));
   }
 

@@ -88,32 +88,40 @@
 
   async function loadTasks() {
     const doc = await fetchDoc('/tasks/index');
-    const pane = doc.getElementById('all') || doc.body;
     const num = (s) => parseInt(String(s).replace(/\./g, ''), 10) || 0;
-    return [...pane.querySelectorAll('.task_panel.hidden-xs')].map((p) => {
-      p.querySelectorAll('script').forEach((s) => s.remove());
-      const heading = p.querySelector('.panel-heading');
-      const category = heading?.querySelector('b')?.textContent.replace(/[[\]]/g, '').trim() || '';
-      const title = (heading?.textContent || '')
-        .replace(/\[[^\]]*\]/, '')
-        .replace(/Meer taken volgen/, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-      const body = (p.querySelector('.task_body')?.textContent || '').replace(/\s+/g, ' ');
-      const progress = body.match(/([\d.]+)\s*\/\s*([\d.]+)/);
-      const reward = (body.match(/[\d.]+ Credits|\d+ coins?/gi) || []).join(' + ');
-      const form = p.querySelector('form[action*="claim_reward"]');
-      const claimable = !!form?.querySelector('input[type=submit]:not([disabled])');
-      return {
-        category,
-        title,
-        done: progress ? num(progress[1]) : 0,
-        total: progress ? num(progress[2]) : 1,
-        reward,
-        claimable,
-        form,
-      };
-    });
+    const seen = new Set();
+    // "Alle taken" does not hold the event tabs (Sinterklaas…): read every tab and drop repeats
+    return [...doc.querySelectorAll('#all .task_panel.hidden-xs, #event .task_panel.hidden-xs, #autumn .task_panel.hidden-xs')]
+      .map((p) => {
+        const endsAt = Number(p.querySelector('script')?.textContent.match(/registerTaskTimer\("[^"]*",\s*"[^"]*",\s*(\d+)/)?.[1]) || null;
+        p.querySelectorAll('script').forEach((s) => s.remove());
+        const heading = p.querySelector('.panel-heading');
+        const category = heading?.querySelector('b')?.textContent.replace(/[[\]]/g, '').trim() || '';
+        const title = (heading?.textContent || '')
+          .replace(/\[[^\]]*\]/, '')
+          .replace(/Meer taken volgen/, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        const body = (p.querySelector('.task_body')?.textContent || '').replace(/\s+/g, ' ');
+        const progress = body.match(/([\d.]+)\s*\/\s*([\d.]+)/);
+        const reward = (body.match(/[\d.]+ Credits|\d+ coins?/gi) || []).join(' + ');
+        const form = p.querySelector('form[action*="claim_reward"]');
+        const claimable = !!form?.querySelector('input[type=submit]:not([disabled])');
+        return {
+          category,
+          title,
+          endsAt,
+          done: progress ? num(progress[1]) : 0,
+          total: progress ? num(progress[2]) : 1,
+          reward,
+          claimable,
+          form,
+        };
+      })
+      .filter((t) => {
+        const key = `${t.title}|${t.total}|${t.endsAt}`;
+        return seen.has(key) ? false : (seen.add(key), true);
+      });
   }
 
   async function claimTask(form) {
@@ -326,6 +334,14 @@
           <div class="progress" style="height:6px;margin:2px 0 1px"><div class="progress-bar ${t.claimable ? 'progress-bar-success' : ''}" style="width:${pct}%"></div></div>
           <small class="text-muted">${escapeHtml(t.reward)}</small>`);
         row.style.marginBottom = '6px';
+        // Event counter check: how many of this event's missions the script saw finishing vs. what the game counted
+        if (/evenementopdrachten/.test(t.title) && t.endsAt) {
+          const mine = extrasRead('completed_v1', []).filter((e) => e.ev && Math.abs(e.ev - t.endsAt) < 36e5);
+          if (mine.length) {
+            const since = new Date(Math.min(...mine.map((e) => e.ts))).toLocaleDateString('nl-NL', { day: 'numeric', month: 'short' });
+            row.append(el(`<small class="text-muted">🔎 Script zag ${mine.length} van deze evenementmeldingen verdwijnen sinds ${since} (afgerond of verlopen); het spel telt ${formatCredits(t.done)}.</small>`));
+          }
+        }
         if (t.claimable) {
           const btn = actionButton('Claim', async () => {
             const ok = await claimTask(t.form);

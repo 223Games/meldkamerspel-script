@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.12.1
+// @version      7.13.0
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -141,6 +141,7 @@
       registerSettingsMenu();
       registerSyncMenu();
       startSync();
+      refreshEventTypes().catch(() => {});
     }
     if (isMainPage) {
       initHomeAssistantBridge();
@@ -2394,32 +2395,40 @@
 
   async function loadTasks() {
     const doc = await fetchDoc('/tasks/index');
-    const pane = doc.getElementById('all') || doc.body;
     const num = (s) => parseInt(String(s).replace(/\./g, ''), 10) || 0;
-    return [...pane.querySelectorAll('.task_panel.hidden-xs')].map((p) => {
-      p.querySelectorAll('script').forEach((s) => s.remove());
-      const heading = p.querySelector('.panel-heading');
-      const category = heading?.querySelector('b')?.textContent.replace(/[[\]]/g, '').trim() || '';
-      const title = (heading?.textContent || '')
-        .replace(/\[[^\]]*\]/, '')
-        .replace(/Meer taken volgen/, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-      const body = (p.querySelector('.task_body')?.textContent || '').replace(/\s+/g, ' ');
-      const progress = body.match(/([\d.]+)\s*\/\s*([\d.]+)/);
-      const reward = (body.match(/[\d.]+ Credits|\d+ coins?/gi) || []).join(' + ');
-      const form = p.querySelector('form[action*="claim_reward"]');
-      const claimable = !!form?.querySelector('input[type=submit]:not([disabled])');
-      return {
-        category,
-        title,
-        done: progress ? num(progress[1]) : 0,
-        total: progress ? num(progress[2]) : 1,
-        reward,
-        claimable,
-        form,
-      };
-    });
+    const seen = new Set();
+    // "Alle taken" does not hold the event tabs (Sinterklaas…): read every tab and drop repeats
+    return [...doc.querySelectorAll('#all .task_panel.hidden-xs, #event .task_panel.hidden-xs, #autumn .task_panel.hidden-xs')]
+      .map((p) => {
+        const endsAt = Number(p.querySelector('script')?.textContent.match(/registerTaskTimer\("[^"]*",\s*"[^"]*",\s*(\d+)/)?.[1]) || null;
+        p.querySelectorAll('script').forEach((s) => s.remove());
+        const heading = p.querySelector('.panel-heading');
+        const category = heading?.querySelector('b')?.textContent.replace(/[[\]]/g, '').trim() || '';
+        const title = (heading?.textContent || '')
+          .replace(/\[[^\]]*\]/, '')
+          .replace(/Meer taken volgen/, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        const body = (p.querySelector('.task_body')?.textContent || '').replace(/\s+/g, ' ');
+        const progress = body.match(/([\d.]+)\s*\/\s*([\d.]+)/);
+        const reward = (body.match(/[\d.]+ Credits|\d+ coins?/gi) || []).join(' + ');
+        const form = p.querySelector('form[action*="claim_reward"]');
+        const claimable = !!form?.querySelector('input[type=submit]:not([disabled])');
+        return {
+          category,
+          title,
+          endsAt,
+          done: progress ? num(progress[1]) : 0,
+          total: progress ? num(progress[2]) : 1,
+          reward,
+          claimable,
+          form,
+        };
+      })
+      .filter((t) => {
+        const key = `${t.title}|${t.total}|${t.endsAt}`;
+        return seen.has(key) ? false : (seen.add(key), true);
+      });
   }
 
   async function claimTask(form) {
@@ -2632,6 +2641,14 @@
           <div class="progress" style="height:6px;margin:2px 0 1px"><div class="progress-bar ${t.claimable ? 'progress-bar-success' : ''}" style="width:${pct}%"></div></div>
           <small class="text-muted">${escapeHtml(t.reward)}</small>`);
         row.style.marginBottom = '6px';
+        // Event counter check: how many of this event's missions the script saw finishing vs. what the game counted
+        if (/evenementopdrachten/.test(t.title) && t.endsAt) {
+          const mine = extrasRead('completed_v1', []).filter((e) => e.ev && Math.abs(e.ev - t.endsAt) < 36e5);
+          if (mine.length) {
+            const since = new Date(Math.min(...mine.map((e) => e.ts))).toLocaleDateString('nl-NL', { day: 'numeric', month: 'short' });
+            row.append(el(`<small class="text-muted">🔎 Script zag ${mine.length} van deze evenementmeldingen verdwijnen sinds ${since} (afgerond of verlopen); het spel telt ${formatCredits(t.done)}.</small>`));
+          }
+        }
         if (t.claimable) {
           const btn = actionButton('Claim', async () => {
             const ok = await claimTask(t.form);
@@ -4658,6 +4675,25 @@ ${rows
     }
   };
 
+  /**
+   * Event missions (Sinterklaas, Herfst…) are the mission types with a limited date window in the game's catalog.
+   * Map: mission type id -> end of the event (ms). Cached 6 h; refreshed in the background.
+   */
+  let eventTypeEnds = new Map(Object.entries(extrasRead('event_types_v1', { map: {} }).map));
+  async function refreshEventTypes() {
+    const cached = extrasRead('event_types_v1', { ts: 0, map: {} });
+    if (Date.now() - cached.ts < 6 * 3600e3) return;
+    const now = Date.now();
+    const map = {};
+    (await loadMissionCatalog()).forEach((t) => {
+      const start = Date.parse(t.additional?.date_start);
+      const end = Date.parse(t.additional?.date_end);
+      if (end && start <= now && end >= now) map[String(t.id)] = end;
+    });
+    extrasWrite('event_types_v1', { ts: now, map });
+    eventTypeEnds = new Map(Object.entries(map));
+  }
+
   const FREE_FMS = new Set([1, 2]); // 1 = free on radio, 2 = at station
   const isFireEngine = (typeId) => ['TS', 'TST'].includes(labelOf(typeId));
 
@@ -4691,6 +4727,7 @@ ${rows
    * an event list/filter type, an event class or attribute, or a keyword from the settings in the caption.
    */
   function isEventEntry(entry, caption) {
+    if (eventTypeEnds.has(String(entry.getAttribute('mission_type_id')))) return true;
     const type = entry.getAttribute('data-mission-type-filter') || '';
     if (type && !['emergency', 'sicherheitswache', 'krankentransporte'].includes(type)) return true;
     if (/event/i.test(entry.parentElement?.id || '') || /event/i.test(entry.className) || entry.hasAttribute('data-event')) return true;
@@ -4957,7 +4994,8 @@ ${rows
 
   function recordCompletion(typeId) {
     const entries = extrasRead('completed_v1', []);
-    entries.push({ ts: Date.now(), typeId: typeId || null });
+    const ev = eventTypeEnds.get(String(typeId)) || null; // set for event missions: lets the task panel compare with the game's counter
+    entries.push({ ts: Date.now(), typeId: typeId || null, ...(ev ? { ev } : {}) });
     extrasWrite('completed_v1', entries.filter((e) => Date.now() - e.ts < 30 * 86400e3));
   }
 
