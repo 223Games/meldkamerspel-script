@@ -227,7 +227,7 @@
             '<small class="text-muted">Nog niets ontdekt. Open meldingen zoals altijd: wat er gevraagd wordt en je niet hebt, komt hier vanzelf te staan.</small>';
           return;
         }
-        const short = (caption) => escapeHtml(caption.trim().replace(`${CONFIG.vru.prefix} `, ''));
+        const short = shortPost;
         wrap.innerHTML = '';
         list.forEach((sp) => {
           const row = document.createElement('div');
@@ -240,11 +240,11 @@
           const facts = [];
           if (sp.missions) facts.push(`<b>${sp.missions}× gemist</b> (14 d)`);
           if (sp.unlocked) facts.push(`${sp.unlocked} meldingstype(s)`);
-          if (sp.shop) facts.push(`winkel: ${escapeHtml(sp.shop.name)}${sp.shop.price ? ` (${formatCredits(sp.shop.price)})` : ''}`);
+          if (sp.shop && !owned) facts.push(`winkel: ${escapeHtml(sp.shop.name)}${sp.shop.price ? ` (${formatCredits(sp.shop.price)})` : ''}`);
           if (sp.education)
             facts.push(
               `opleiding <i>${escapeHtml(sp.education)}</i>: ${
-                sp.trained ? `<b>${sp.trained}</b> opgeleid` : '<b class="text-danger">niemand opgeleid</b> — eerst opleiden (school/academie)'
+                sp.trained ? `<b>${sp.trained}</b> opgeleid` : '<b class="text-danger">niemand opgeleid</b> — zie Opleidingen'
               }`
             );
           if (!sp.allowed) facts.push(`pas vanaf ${sp.shop.minStations} posten`);

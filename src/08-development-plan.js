@@ -60,6 +60,28 @@
     return data;
   }
 
+  /** Is anyone trained for the vehicle an extension brings? Without them it never leaves the station. */
+  function extensionEducation(data, ext) {
+    const education = data.typeInfo?.[ext.vehicleTypeId]?.education;
+    if (!education) return null;
+    const key = data.keyOf ? data.keyOf(education) : null;
+    return { education, trained: key ? (data.people || []).filter((p) => p.keys.includes(key)).length : 0 };
+  }
+
+  /** Educations (e.g. for DB-RI, DB-VI) nobody has yet, for extensions you have missions for. Shared by the plan and the training queue. */
+  function untrainedExtensionNeeds(data, notOwned) {
+    return PLAN_EXTENSIONS.map((ext) => ({ ext, edu: extensionEducation(data, ext), stats: data.extensionStats?.[ext.key] }))
+      .filter((x) => x.edu && !x.edu.trained && ((x.stats?.count || 0) || missesMatching(notOwned, x.ext.match)))
+      .map((x) => ({
+        name: x.ext.name,
+        education: x.edu.education,
+        minCrew: data.typeInfo[x.ext.vehicleTypeId].minCrew,
+        maxCrew: data.typeInfo[x.ext.vehicleTypeId].maxCrew,
+        count: x.stats?.count || 1,
+        missed: missesMatching(notOwned, x.ext.match) || 0,
+      }));
+  }
+
   /**
    * Greedy plan: repeatedly takes the step with the most value per credit, while simulating
    * levels, parking slots, crew and personnel so later steps stay realistic.
@@ -121,21 +143,13 @@
     const notOwned = notOwnedStats();
     const academy = data.academy || null; // { typeId, name, owned }
 
-    // Is anyone trained for the vehicle an extension brings? Without them the vehicle never leaves the station
-    const educationOf = (ext) => {
-      const education = data.typeInfo?.[ext.vehicleTypeId]?.education;
-      if (!education) return null;
-      const key = data.keyOf ? data.keyOf(education) : null;
-      return { education, trained: key ? (data.people || []).filter((p) => p.keys.includes(key)).length : 0 };
-    };
-    const extensionTraining = PLAN_EXTENSIONS.map((ext) => ({ ext, edu: educationOf(ext), stats: data.extensionStats?.[ext.key] }))
-      .filter((x) => x.edu && !x.edu.trained && ((x.stats?.count || 0) || missesMatching(notOwned, x.ext.match)))
-      .map((x) => ({
-        label: x.ext.name,
-        info: { education: x.edu.education, minCrew: data.typeInfo[x.ext.vehicleTypeId].minCrew, maxCrew: data.typeInfo[x.ext.vehicleTypeId].maxCrew },
-        unlocked: new Array(x.stats?.count || 1).fill(0),
-        extension: true,
-      }));
+    const educationOf = (ext) => extensionEducation(data, ext);
+    const extensionTraining = untrainedExtensionNeeds(data, notOwned).map((x) => ({
+      label: x.name,
+      info: { education: x.education, minCrew: x.minCrew, maxCrew: x.maxCrew },
+      unlocked: new Array(x.count).fill(0),
+      extension: true,
+    }));
     const pendingTraining = specialtyRows
       .filter((sp) => sp.unlocked.length && !sp.owned && sp.info?.education && !sp.trained)
       .concat(extensionTraining);
@@ -368,7 +382,7 @@
           });
           return a;
         };
-        const short = (caption) => escapeHtml(caption.trim().replace(`${CONFIG.vru.prefix} `, ''));
+        const short = shortPost;
 
         let cumulative = 0;
         // Greedy over the balance: a cheaper later step you can pay now is "kan nu",
@@ -457,7 +471,12 @@
         intro.style.marginBottom = '6px';
         wrap.append(intro, list);
 
-        if (training.length) {
+        if (training.length && data.academy?.owned) {
+          const t = document.createElement('small');
+          t.className = 'text-muted';
+          t.textContent = `🎓 ${training.length} opleiding(en) nodig voor deze voertuigen: zie de sectie Opleidingen (wachtrij voor de academie).`;
+          wrap.append(t);
+        } else if (training.length) {
           const t = document.createElement('div');
           t.style.cssText = 'margin-top:4px;padding-top:6px;border-top:1px solid rgba(128,128,128,.3)';
           t.innerHTML = `<b>🎓 Eerst opleiden</b> (daarna komen deze voertuigen in het plan):<br>${training

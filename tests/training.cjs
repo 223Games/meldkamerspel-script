@@ -33,7 +33,12 @@ const specialists = [
 ];
 const queue = m.buildTrainingQueue(specialists, { academies: [{ running: [{ education: 'Specialist Rietdakbrandbestrijder', endsAt: expectedEnd }] }] });
 
+const withExt = m.buildTrainingQueue(specialists, { academies: [] }, [
+  { name: 'Veetakels', education: 'Veeredder', minCrew: 4, maxCrew: 6, count: 6, missed: 2 },
+  { name: 'Rietkap', education: 'Adviseur Gevaarlijke Stoffen', minCrew: 2, maxCrew: 4, count: 1, missed: 0 }, // already queued via AGS: no duplicate
+]);
 const checks = {
+  extensionEducationQueued: withExt.some((q) => q.vehicle === 'Veetakels' && q.people === 4) && withExt.filter((q) => q.education === 'Adviseur Gevaarlijke Stoffen').length === 1,
   dutchDate: m.parseDutchDate('ma 30 nov 2026 19:33:21 CET') === expectedEnd,
   busyAcademy: a.free === false && a.running.length === 1 && a.running[0].id === 2957739 && a.running[0].education === 'Specialist Rietdakbrandbestrijder',
   extraClassroomPrice: a.extraClassroomPrice === 400000,

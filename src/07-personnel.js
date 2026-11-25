@@ -339,7 +339,7 @@
       return { ...s, typeId, info, unlocked, next, owned, key, trained };
     });
 
-    return { stations, stationRows, people, vehicles, typeInfo, specialistVehicles, specialtyRows, stationCount, keyOf };
+    return { stations, stationRows, people, vehicles, typeInfo, specialistVehicles, specialtyRows, stationCount, keyOf, hasAcademy: buildings.some((b) => b.building_type === FIRE_ACADEMY_TYPE) };
   }
 
   function initPersonnelPanel() {
@@ -391,50 +391,17 @@
       d.append(content);
       return d;
     };
-    const short = (caption) => escapeHtml(caption.trim().replace(`${CONFIG.vru.prefix} `, ''));
-    const actionButton = (label, onClick, cls = 'btn-success', confirmText = null) => {
-      const a = document.createElement('a');
-      a.href = '#';
-      a.className = `btn btn-xs ${cls}`;
-      a.style.marginLeft = '6px';
-      a.textContent = label;
-      a.addEventListener('click', async (e) => {
-        e.preventDefault();
-        if (a.dataset.busy) return;
-        if (confirmText && !window.confirm(confirmText)) return;
-        a.dataset.busy = '1';
-        a.textContent = '…';
-        try {
-          const ok = await onClick();
-          if (ok === 'cancel') {
-            a.textContent = label;
-            delete a.dataset.busy;
-            return;
-          }
-          a.textContent = ok === false ? 'Mislukt' : '✓';
-          a.className = `btn btn-xs ${ok === false ? 'btn-danger' : 'btn-default'}`;
-          if (ok !== false) {
-            invalidatePersonnel(); // data changed: next render must refetch
-            setTimeout(render, 900);
-          }
-        } catch (err) {
-          console.error('[MKS→HA]', err);
-          a.textContent = 'Mislukt';
-          a.title = err.message;
-          a.className = 'btn btn-xs btn-danger';
-        }
+    const short = shortPost;
+    const actionButton = (label, onClick, cls = 'btn-success', confirmText = null) =>
+      makeActionButton(label, onClick, {
+        cls,
+        confirmText,
+        onDone: () => {
+          invalidatePersonnel(); // data changed: next render must refetch
+          setTimeout(render, 900);
+        },
       });
-      return a;
-    };
-    const row = (html, ...buttons) => {
-      const r = el(`<span>${html}</span>`);
-      r.style.cssText = 'display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:5px';
-      const right = document.createElement('span');
-      right.style.whiteSpace = 'nowrap';
-      buttons.filter(Boolean).forEach((b) => right.append(b));
-      r.append(right);
-      return r;
-    };
+    const row = makeRow;
 
     async function updateBadge() {
       try {
@@ -580,19 +547,6 @@
         return wrap;
       }
       const crewPlan = planSpecialistCrew(data, transfer.remaining);
-      const safeSteps = crewPlan.filter((x) => x.type !== 'transfer');
-      if (safeSteps.length) {
-        const n = safeSteps.reduce((t, x) => t + x.people.length, 0);
-        wrap.append(
-          row(
-            `⚡ <b>${n} opgeleide persoon/personen vastzetten op het juiste voertuig</b><br><small class="text-muted">Koppelen reserveert ze voor dat voertuig; verplaatsen tussen posten blijft per voertuig hieronder.</small>`,
-            actionButton(`Koppel alles (${n})`, async () => {
-              for (const step of safeSteps) await executeCrewStep(step);
-              return true;
-            })
-          )
-        );
-      }
       data.specialistVehicles.forEach((s) => {
         const v = s.vehicle;
         const base = `<b>${short(v.caption)}</b> <small class="text-muted">· ${short(s.station.caption)} · vereist ${escapeHtml(
@@ -732,7 +686,11 @@
         );
       });
 
-      // Training options
+      // Training options: with an academy the queue in the VRU panel says what to train next
+      if (data.hasAcademy) {
+        wrap.append(el('<small class="text-muted">🎓 Wat je hierna moet opleiden staat in het VRU-paneel, sectie Opleidingen.</small>'));
+        return wrap;
+      }
       wrap.append(
         el(`<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(128,128,128,.3)">
           <b>Opleiden kan via:</b>

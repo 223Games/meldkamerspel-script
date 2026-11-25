@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.10.0
+// @version      7.11.0
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -719,11 +719,6 @@
     );
   }
 
-  /** Main category of an assigned row (TS before NB, so a TST-NB is first of all a fire engine). */
-  function assignedRowCategory(row) {
-    const keys = assignedRowCategories(row);
-    return keys.find((k) => k !== 'brush_trucks') || keys[0] || null;
-  }
 
   /** Requirement keys as the game names them → our category ("…brush…" = nature fire vehicle). */
   const canonicalRequirementKey = (key) => (/brush/i.test(key) ? 'brush_trucks' : key);
@@ -1869,6 +1864,58 @@
     jsonCache.set(url, { ts: Date.now(), promise });
     return promise;
   };
+  const FIRE_ACADEMY_TYPE = 4; // building_type of 'Brandweer, Academie'
+
+  /** Post name for panels ("09-06 Werkhoven"), HTML-safe. */
+  const shortPost = (caption) => escapeHtml(caption.trim().replace(`${CONFIG.vru.prefix} `, ''));
+
+  /**
+   * Small action link shared by all panels: "…" while busy, "✓" when done, "Mislukt" on an error or a `false` result.
+   * The click handler may return 'cancel' to reset the button; onDone runs after a successful action.
+   */
+  function makeActionButton(label, onClick, { cls = 'btn-success', confirmText = null, onDone = null } = {}) {
+    const a = document.createElement('a');
+    a.href = '#';
+    a.className = `btn btn-xs ${cls || 'btn-success'}`;
+    a.style.marginLeft = '5px';
+    a.textContent = label;
+    a.addEventListener('click', async (e) => {
+      e.preventDefault();
+      if (a.dataset.busy || (confirmText && !window.confirm(confirmText))) return;
+      a.dataset.busy = '1';
+      a.textContent = '…';
+      try {
+        const ok = await onClick();
+        if (ok === 'cancel') {
+          a.textContent = label;
+          delete a.dataset.busy;
+          return;
+        }
+        a.textContent = ok === false ? 'Mislukt' : '✓';
+        a.className = `btn btn-xs ${ok === false ? 'btn-danger' : 'btn-default'}`;
+        if (ok !== false && onDone) onDone();
+      } catch (err) {
+        console.error('[MKS→HA]', err);
+        a.textContent = 'Mislukt';
+        a.title = err.message;
+        a.className = 'btn btn-xs btn-danger';
+      }
+    });
+    return a;
+  }
+
+  /** Panel row: text on the left, buttons on the right. */
+  function makeRow(html, ...buttons) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:6px';
+    row.innerHTML = `<span>${html}</span>`;
+    const right = document.createElement('span');
+    right.style.whiteSpace = 'nowrap';
+    buttons.filter(Boolean).forEach((b) => right.append(b));
+    row.append(right);
+    return row;
+  }
+
   const fetchDoc = async (url) =>
     new DOMParser().parseFromString(await fetch(url, { credentials: 'include' }).then((r) => r.text()), 'text/html');
 
@@ -3031,7 +3078,7 @@
       return { ...s, typeId, info, unlocked, next, owned, key, trained };
     });
 
-    return { stations, stationRows, people, vehicles, typeInfo, specialistVehicles, specialtyRows, stationCount, keyOf };
+    return { stations, stationRows, people, vehicles, typeInfo, specialistVehicles, specialtyRows, stationCount, keyOf, hasAcademy: buildings.some((b) => b.building_type === FIRE_ACADEMY_TYPE) };
   }
 
   function initPersonnelPanel() {
@@ -3083,50 +3130,17 @@
       d.append(content);
       return d;
     };
-    const short = (caption) => escapeHtml(caption.trim().replace(`${CONFIG.vru.prefix} `, ''));
-    const actionButton = (label, onClick, cls = 'btn-success', confirmText = null) => {
-      const a = document.createElement('a');
-      a.href = '#';
-      a.className = `btn btn-xs ${cls}`;
-      a.style.marginLeft = '6px';
-      a.textContent = label;
-      a.addEventListener('click', async (e) => {
-        e.preventDefault();
-        if (a.dataset.busy) return;
-        if (confirmText && !window.confirm(confirmText)) return;
-        a.dataset.busy = '1';
-        a.textContent = '…';
-        try {
-          const ok = await onClick();
-          if (ok === 'cancel') {
-            a.textContent = label;
-            delete a.dataset.busy;
-            return;
-          }
-          a.textContent = ok === false ? 'Mislukt' : '✓';
-          a.className = `btn btn-xs ${ok === false ? 'btn-danger' : 'btn-default'}`;
-          if (ok !== false) {
-            invalidatePersonnel(); // data changed: next render must refetch
-            setTimeout(render, 900);
-          }
-        } catch (err) {
-          console.error('[MKS→HA]', err);
-          a.textContent = 'Mislukt';
-          a.title = err.message;
-          a.className = 'btn btn-xs btn-danger';
-        }
+    const short = shortPost;
+    const actionButton = (label, onClick, cls = 'btn-success', confirmText = null) =>
+      makeActionButton(label, onClick, {
+        cls,
+        confirmText,
+        onDone: () => {
+          invalidatePersonnel(); // data changed: next render must refetch
+          setTimeout(render, 900);
+        },
       });
-      return a;
-    };
-    const row = (html, ...buttons) => {
-      const r = el(`<span>${html}</span>`);
-      r.style.cssText = 'display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:5px';
-      const right = document.createElement('span');
-      right.style.whiteSpace = 'nowrap';
-      buttons.filter(Boolean).forEach((b) => right.append(b));
-      r.append(right);
-      return r;
-    };
+    const row = makeRow;
 
     async function updateBadge() {
       try {
@@ -3272,19 +3286,6 @@
         return wrap;
       }
       const crewPlan = planSpecialistCrew(data, transfer.remaining);
-      const safeSteps = crewPlan.filter((x) => x.type !== 'transfer');
-      if (safeSteps.length) {
-        const n = safeSteps.reduce((t, x) => t + x.people.length, 0);
-        wrap.append(
-          row(
-            `⚡ <b>${n} opgeleide persoon/personen vastzetten op het juiste voertuig</b><br><small class="text-muted">Koppelen reserveert ze voor dat voertuig; verplaatsen tussen posten blijft per voertuig hieronder.</small>`,
-            actionButton(`Koppel alles (${n})`, async () => {
-              for (const step of safeSteps) await executeCrewStep(step);
-              return true;
-            })
-          )
-        );
-      }
       data.specialistVehicles.forEach((s) => {
         const v = s.vehicle;
         const base = `<b>${short(v.caption)}</b> <small class="text-muted">· ${short(s.station.caption)} · vereist ${escapeHtml(
@@ -3424,7 +3425,11 @@
         );
       });
 
-      // Training options
+      // Training options: with an academy the queue in the VRU panel says what to train next
+      if (data.hasAcademy) {
+        wrap.append(el('<small class="text-muted">🎓 Wat je hierna moet opleiden staat in het VRU-paneel, sectie Opleidingen.</small>'));
+        return wrap;
+      }
       wrap.append(
         el(`<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(128,128,128,.3)">
           <b>Opleiden kan via:</b>
@@ -3521,6 +3526,28 @@
     return data;
   }
 
+  /** Is anyone trained for the vehicle an extension brings? Without them it never leaves the station. */
+  function extensionEducation(data, ext) {
+    const education = data.typeInfo?.[ext.vehicleTypeId]?.education;
+    if (!education) return null;
+    const key = data.keyOf ? data.keyOf(education) : null;
+    return { education, trained: key ? (data.people || []).filter((p) => p.keys.includes(key)).length : 0 };
+  }
+
+  /** Educations (e.g. for DB-RI, DB-VI) nobody has yet, for extensions you have missions for. Shared by the plan and the training queue. */
+  function untrainedExtensionNeeds(data, notOwned) {
+    return PLAN_EXTENSIONS.map((ext) => ({ ext, edu: extensionEducation(data, ext), stats: data.extensionStats?.[ext.key] }))
+      .filter((x) => x.edu && !x.edu.trained && ((x.stats?.count || 0) || missesMatching(notOwned, x.ext.match)))
+      .map((x) => ({
+        name: x.ext.name,
+        education: x.edu.education,
+        minCrew: data.typeInfo[x.ext.vehicleTypeId].minCrew,
+        maxCrew: data.typeInfo[x.ext.vehicleTypeId].maxCrew,
+        count: x.stats?.count || 1,
+        missed: missesMatching(notOwned, x.ext.match) || 0,
+      }));
+  }
+
   /**
    * Greedy plan: repeatedly takes the step with the most value per credit, while simulating
    * levels, parking slots, crew and personnel so later steps stay realistic.
@@ -3582,21 +3609,13 @@
     const notOwned = notOwnedStats();
     const academy = data.academy || null; // { typeId, name, owned }
 
-    // Is anyone trained for the vehicle an extension brings? Without them the vehicle never leaves the station
-    const educationOf = (ext) => {
-      const education = data.typeInfo?.[ext.vehicleTypeId]?.education;
-      if (!education) return null;
-      const key = data.keyOf ? data.keyOf(education) : null;
-      return { education, trained: key ? (data.people || []).filter((p) => p.keys.includes(key)).length : 0 };
-    };
-    const extensionTraining = PLAN_EXTENSIONS.map((ext) => ({ ext, edu: educationOf(ext), stats: data.extensionStats?.[ext.key] }))
-      .filter((x) => x.edu && !x.edu.trained && ((x.stats?.count || 0) || missesMatching(notOwned, x.ext.match)))
-      .map((x) => ({
-        label: x.ext.name,
-        info: { education: x.edu.education, minCrew: data.typeInfo[x.ext.vehicleTypeId].minCrew, maxCrew: data.typeInfo[x.ext.vehicleTypeId].maxCrew },
-        unlocked: new Array(x.stats?.count || 1).fill(0),
-        extension: true,
-      }));
+    const educationOf = (ext) => extensionEducation(data, ext);
+    const extensionTraining = untrainedExtensionNeeds(data, notOwned).map((x) => ({
+      label: x.name,
+      info: { education: x.education, minCrew: x.minCrew, maxCrew: x.maxCrew },
+      unlocked: new Array(x.count).fill(0),
+      extension: true,
+    }));
     const pendingTraining = specialtyRows
       .filter((sp) => sp.unlocked.length && !sp.owned && sp.info?.education && !sp.trained)
       .concat(extensionTraining);
@@ -3829,7 +3848,7 @@
           });
           return a;
         };
-        const short = (caption) => escapeHtml(caption.trim().replace(`${CONFIG.vru.prefix} `, ''));
+        const short = shortPost;
 
         let cumulative = 0;
         // Greedy over the balance: a cheaper later step you can pay now is "kan nu",
@@ -3918,7 +3937,12 @@
         intro.style.marginBottom = '6px';
         wrap.append(intro, list);
 
-        if (training.length) {
+        if (training.length && data.academy?.owned) {
+          const t = document.createElement('small');
+          t.className = 'text-muted';
+          t.textContent = `🎓 ${training.length} opleiding(en) nodig voor deze voertuigen: zie de sectie Opleidingen (wachtrij voor de academie).`;
+          wrap.append(t);
+        } else if (training.length) {
           const t = document.createElement('div');
           t.style.cssText = 'margin-top:4px;padding-top:6px;border-top:1px solid rgba(128,128,128,.3)';
           t.innerHTML = `<b>🎓 Eerst opleiden</b> (daarna komen deze voertuigen in het plan):<br>${training
@@ -4499,43 +4523,11 @@ ${rows
         const data = await analysePersonnel();
         const { moves, renames, stuck, transfers } = planRedistribution(data);
         const transferInfo = await loadTransferInfo(data.stations[0].id);
-        const short = (caption) => escapeHtml(caption.trim().replace(`${CONFIG.vru.prefix} `, ''));
+        const short = shortPost;
         wrap.innerHTML = '';
 
-        const button = (label, onClick, cls, confirmText) => {
-          const a = document.createElement('a');
-          a.href = '#';
-          a.className = `btn btn-xs ${cls}`;
-          a.style.marginLeft = '4px';
-          a.textContent = label;
-          a.addEventListener('click', async (e) => {
-            e.preventDefault();
-            if (a.dataset.busy || (confirmText && !window.confirm(confirmText))) return;
-            a.dataset.busy = '1';
-            a.textContent = '…';
-            try {
-              await onClick();
-              a.textContent = '✓';
-              a.className = 'btn btn-xs btn-default';
-            } catch (err) {
-              console.error('[MKS→HA]', err);
-              a.textContent = 'Mislukt';
-              a.title = err.message;
-              a.className = 'btn btn-xs btn-danger';
-            }
-          });
-          return a;
-        };
-        const line = (html, ...buttons) => {
-          const row = document.createElement('div');
-          row.style.cssText = 'display:flex;justify-content:space-between;gap:6px;margin-bottom:6px';
-          row.innerHTML = `<span>${html}</span>`;
-          const right = document.createElement('span');
-          right.style.whiteSpace = 'nowrap';
-          buttons.forEach((b) => right.append(b));
-          row.append(right);
-          wrap.append(row);
-        };
+        const button = (label, onClick, cls, confirmText) => makeActionButton(label, onClick, { cls, confirmText });
+        const line = (html, ...buttons) => wrap.append(makeRow(html, ...buttons));
         const heading = (text) => {
           const h = document.createElement('div');
           h.style.cssText = 'font-weight:bold;margin:6px 0 3px';
@@ -4605,6 +4597,15 @@ ${rows
 
         if (crew.length) {
           heading('🎓 Opgeleid personeel op het juiste voertuig');
+          const safe = crew.filter((c) => c.type !== 'transfer');
+          if (safe.length > 1) {
+            line(
+              '<small class="text-muted">Alle koppelingen in één keer (verplaatsen blijft per voertuig, met bevestiging)</small>',
+              button(`Koppel alles (${safe.length})`, async () => {
+                for (const c of safe) await executeCrewStep(c);
+              })
+            );
+          }
           crew.forEach((c) => {
             const who = c.people.map((p) => p.name).join(', ');
             const what = `<b>${short(c.vehicle.caption)}</b> <small class="text-muted">· ${short(c.station.caption)}</small><br><small>${
@@ -5348,7 +5349,7 @@ ${rows
             '<small class="text-muted">Nog niets ontdekt. Open meldingen zoals altijd: wat er gevraagd wordt en je niet hebt, komt hier vanzelf te staan.</small>';
           return;
         }
-        const short = (caption) => escapeHtml(caption.trim().replace(`${CONFIG.vru.prefix} `, ''));
+        const short = shortPost;
         wrap.innerHTML = '';
         list.forEach((sp) => {
           const row = document.createElement('div');
@@ -5361,11 +5362,11 @@ ${rows
           const facts = [];
           if (sp.missions) facts.push(`<b>${sp.missions}× gemist</b> (14 d)`);
           if (sp.unlocked) facts.push(`${sp.unlocked} meldingstype(s)`);
-          if (sp.shop) facts.push(`winkel: ${escapeHtml(sp.shop.name)}${sp.shop.price ? ` (${formatCredits(sp.shop.price)})` : ''}`);
+          if (sp.shop && !owned) facts.push(`winkel: ${escapeHtml(sp.shop.name)}${sp.shop.price ? ` (${formatCredits(sp.shop.price)})` : ''}`);
           if (sp.education)
             facts.push(
               `opleiding <i>${escapeHtml(sp.education)}</i>: ${
-                sp.trained ? `<b>${sp.trained}</b> opgeleid` : '<b class="text-danger">niemand opgeleid</b> — eerst opleiden (school/academie)'
+                sp.trained ? `<b>${sp.trained}</b> opgeleid` : '<b class="text-danger">niemand opgeleid</b> — zie Opleidingen'
               }`
             );
           if (!sp.allowed) facts.push(`pas vanaf ${sp.shop.minStations} posten`);
@@ -5719,7 +5720,7 @@ ${rows
     if (academyStateCache && Date.now() - academyStateCache.ts < 60e3) return academyStateCache.value;
     const buildings = await fetchJson('/api/buildings');
     const academies = [];
-    for (const b of buildings.filter((x) => x.building_type === 4)) {
+    for (const b of buildings.filter((x) => x.building_type === FIRE_ACADEMY_TYPE)) {
       const info = parseAcademyDoc(await fetchDoc(`/buildings/${b.id}`));
       for (const lesson of info.running) Object.assign(lesson, parseSchoolingDoc(await fetchDoc(`/schoolings/${lesson.id}`)));
       academies.push({ id: b.id, caption: b.caption.trim(), ...info });
@@ -5734,10 +5735,10 @@ ${rows
    * Priority: vehicle already owned but nobody trained (it stands idle) → missed missions → unlocked mission types.
    * Educations already running are flagged, not repeated.
    */
-  function buildTrainingQueue(specialists, academyState) {
+  function buildTrainingQueue(specialists, academyState, extensionNeeds = []) {
     const running = new Map();
     (academyState?.academies || []).forEach((a) => a.running.forEach((l) => running.set(l.education, { ...l, academy: a })));
-    return specialists
+    const fromSpecialists = specialists
       .filter((sp) => sp.education && !sp.trained)
       .map((sp) => {
         const lesson = running.get(sp.education);
@@ -5754,7 +5755,22 @@ ${rows
           score: (owned ? 3000 : 0) + (sp.missions || 0) * 100 + (sp.unlocked || 0) * 10,
         };
       })
-      .sort((a, b) => !!a.running - !!b.running || b.score - a.score);
+    // Extension vehicles (DB-VI…) you do not own yet are not in the specialists list but need the same planning
+    const known = new Set(fromSpecialists.map((q) => q.education));
+    const fromExtensions = extensionNeeds
+      .filter((x) => !known.has(x.education))
+      .map((x) => ({
+        education: x.education,
+        vehicle: x.name,
+        owned: false,
+        missions: x.missed,
+        unlocked: x.count,
+        people: Math.max(1, x.minCrew || 1),
+        station: null,
+        running: running.get(x.education) || null,
+        score: x.missed * 100 + x.count * 10,
+      }));
+    return [...fromSpecialists, ...fromExtensions].sort((a, b) => !!a.running - !!b.running || b.score - a.score);
   }
 
   async function renderTraining() {
@@ -5768,8 +5784,8 @@ ${rows
           fetchJson('/api/vehicles'),
           loadAcademyState(),
         ]);
-        const queue = buildTrainingQueue(collectSpecialists(data, buildings, vehicles), academyState);
-        const short = (caption) => escapeHtml(caption.trim().replace(`${CONFIG.vru.prefix} `, ''));
+        const queue = buildTrainingQueue(collectSpecialists(data, buildings, vehicles), academyState, untrainedExtensionNeeds(data, notOwnedStats()));
+        const short = shortPost;
         const open = (url) => (typeof unsafeWindow.lightboxOpen === 'function' ? unsafeWindow.lightboxOpen(url) : window.open(url, '_blank'));
         const when = (ts) => {
           if (!ts) return 'onbekend';
@@ -5782,14 +5798,8 @@ ${rows
         };
         wrap.innerHTML = '';
         const line = (html, attr, ...buttons) => {
-          const r = document.createElement('div');
-          r.style.cssText = 'display:flex;justify-content:space-between;gap:6px;margin-bottom:6px';
+          const r = makeRow(html, ...buttons);
           if (attr) r.dataset.mksTraining = attr;
-          r.innerHTML = `<span>${html}</span>`;
-          const right = document.createElement('span');
-          right.style.whiteSpace = 'nowrap';
-          buttons.forEach((b) => right.append(b));
-          r.append(right);
           wrap.append(r);
         };
         const btn = (label, url) => {

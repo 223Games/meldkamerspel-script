@@ -619,6 +619,58 @@
     jsonCache.set(url, { ts: Date.now(), promise });
     return promise;
   };
+  const FIRE_ACADEMY_TYPE = 4; // building_type of 'Brandweer, Academie'
+
+  /** Post name for panels ("09-06 Werkhoven"), HTML-safe. */
+  const shortPost = (caption) => escapeHtml(caption.trim().replace(`${CONFIG.vru.prefix} `, ''));
+
+  /**
+   * Small action link shared by all panels: "…" while busy, "✓" when done, "Mislukt" on an error or a `false` result.
+   * The click handler may return 'cancel' to reset the button; onDone runs after a successful action.
+   */
+  function makeActionButton(label, onClick, { cls = 'btn-success', confirmText = null, onDone = null } = {}) {
+    const a = document.createElement('a');
+    a.href = '#';
+    a.className = `btn btn-xs ${cls || 'btn-success'}`;
+    a.style.marginLeft = '5px';
+    a.textContent = label;
+    a.addEventListener('click', async (e) => {
+      e.preventDefault();
+      if (a.dataset.busy || (confirmText && !window.confirm(confirmText))) return;
+      a.dataset.busy = '1';
+      a.textContent = '…';
+      try {
+        const ok = await onClick();
+        if (ok === 'cancel') {
+          a.textContent = label;
+          delete a.dataset.busy;
+          return;
+        }
+        a.textContent = ok === false ? 'Mislukt' : '✓';
+        a.className = `btn btn-xs ${ok === false ? 'btn-danger' : 'btn-default'}`;
+        if (ok !== false && onDone) onDone();
+      } catch (err) {
+        console.error('[MKS→HA]', err);
+        a.textContent = 'Mislukt';
+        a.title = err.message;
+        a.className = 'btn btn-xs btn-danger';
+      }
+    });
+    return a;
+  }
+
+  /** Panel row: text on the left, buttons on the right. */
+  function makeRow(html, ...buttons) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:6px';
+    row.innerHTML = `<span>${html}</span>`;
+    const right = document.createElement('span');
+    right.style.whiteSpace = 'nowrap';
+    buttons.filter(Boolean).forEach((b) => right.append(b));
+    row.append(right);
+    return row;
+  }
+
   const fetchDoc = async (url) =>
     new DOMParser().parseFromString(await fetch(url, { credentials: 'include' }).then((r) => r.text()), 'text/html');
 

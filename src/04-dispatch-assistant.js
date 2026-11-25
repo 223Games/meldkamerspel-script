@@ -201,11 +201,6 @@
     );
   }
 
-  /** Main category of an assigned row (TS before NB, so a TST-NB is first of all a fire engine). */
-  function assignedRowCategory(row) {
-    const keys = assignedRowCategories(row);
-    return keys.find((k) => k !== 'brush_trucks') || keys[0] || null;
-  }
 
   /** Requirement keys as the game names them → our category ("…brush…" = nature fire vehicle). */
   const canonicalRequirementKey = (key) => (/brush/i.test(key) ? 'brush_trucks' : key);

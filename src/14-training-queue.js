@@ -47,7 +47,7 @@
     if (academyStateCache && Date.now() - academyStateCache.ts < 60e3) return academyStateCache.value;
     const buildings = await fetchJson('/api/buildings');
     const academies = [];
-    for (const b of buildings.filter((x) => x.building_type === 4)) {
+    for (const b of buildings.filter((x) => x.building_type === FIRE_ACADEMY_TYPE)) {
       const info = parseAcademyDoc(await fetchDoc(`/buildings/${b.id}`));
       for (const lesson of info.running) Object.assign(lesson, parseSchoolingDoc(await fetchDoc(`/schoolings/${lesson.id}`)));
       academies.push({ id: b.id, caption: b.caption.trim(), ...info });
@@ -62,10 +62,10 @@
    * Priority: vehicle already owned but nobody trained (it stands idle) → missed missions → unlocked mission types.
    * Educations already running are flagged, not repeated.
    */
-  function buildTrainingQueue(specialists, academyState) {
+  function buildTrainingQueue(specialists, academyState, extensionNeeds = []) {
     const running = new Map();
     (academyState?.academies || []).forEach((a) => a.running.forEach((l) => running.set(l.education, { ...l, academy: a })));
-    return specialists
+    const fromSpecialists = specialists
       .filter((sp) => sp.education && !sp.trained)
       .map((sp) => {
         const lesson = running.get(sp.education);
@@ -82,7 +82,22 @@
           score: (owned ? 3000 : 0) + (sp.missions || 0) * 100 + (sp.unlocked || 0) * 10,
         };
       })
-      .sort((a, b) => !!a.running - !!b.running || b.score - a.score);
+    // Extension vehicles (DB-VI…) you do not own yet are not in the specialists list but need the same planning
+    const known = new Set(fromSpecialists.map((q) => q.education));
+    const fromExtensions = extensionNeeds
+      .filter((x) => !known.has(x.education))
+      .map((x) => ({
+        education: x.education,
+        vehicle: x.name,
+        owned: false,
+        missions: x.missed,
+        unlocked: x.count,
+        people: Math.max(1, x.minCrew || 1),
+        station: null,
+        running: running.get(x.education) || null,
+        score: x.missed * 100 + x.count * 10,
+      }));
+    return [...fromSpecialists, ...fromExtensions].sort((a, b) => !!a.running - !!b.running || b.score - a.score);
   }
 
   async function renderTraining() {
@@ -96,8 +111,8 @@
           fetchJson('/api/vehicles'),
           loadAcademyState(),
         ]);
-        const queue = buildTrainingQueue(collectSpecialists(data, buildings, vehicles), academyState);
-        const short = (caption) => escapeHtml(caption.trim().replace(`${CONFIG.vru.prefix} `, ''));
+        const queue = buildTrainingQueue(collectSpecialists(data, buildings, vehicles), academyState, untrainedExtensionNeeds(data, notOwnedStats()));
+        const short = shortPost;
         const open = (url) => (typeof unsafeWindow.lightboxOpen === 'function' ? unsafeWindow.lightboxOpen(url) : window.open(url, '_blank'));
         const when = (ts) => {
           if (!ts) return 'onbekend';
@@ -110,14 +125,8 @@
         };
         wrap.innerHTML = '';
         const line = (html, attr, ...buttons) => {
-          const r = document.createElement('div');
-          r.style.cssText = 'display:flex;justify-content:space-between;gap:6px;margin-bottom:6px';
+          const r = makeRow(html, ...buttons);
           if (attr) r.dataset.mksTraining = attr;
-          r.innerHTML = `<span>${html}</span>`;
-          const right = document.createElement('span');
-          right.style.whiteSpace = 'nowrap';
-          buttons.forEach((b) => right.append(b));
-          r.append(right);
           wrap.append(r);
         };
         const btn = (label, url) => {

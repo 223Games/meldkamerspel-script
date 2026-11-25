@@ -179,43 +179,11 @@
         const data = await analysePersonnel();
         const { moves, renames, stuck, transfers } = planRedistribution(data);
         const transferInfo = await loadTransferInfo(data.stations[0].id);
-        const short = (caption) => escapeHtml(caption.trim().replace(`${CONFIG.vru.prefix} `, ''));
+        const short = shortPost;
         wrap.innerHTML = '';
 
-        const button = (label, onClick, cls, confirmText) => {
-          const a = document.createElement('a');
-          a.href = '#';
-          a.className = `btn btn-xs ${cls}`;
-          a.style.marginLeft = '4px';
-          a.textContent = label;
-          a.addEventListener('click', async (e) => {
-            e.preventDefault();
-            if (a.dataset.busy || (confirmText && !window.confirm(confirmText))) return;
-            a.dataset.busy = '1';
-            a.textContent = '…';
-            try {
-              await onClick();
-              a.textContent = '✓';
-              a.className = 'btn btn-xs btn-default';
-            } catch (err) {
-              console.error('[MKS→HA]', err);
-              a.textContent = 'Mislukt';
-              a.title = err.message;
-              a.className = 'btn btn-xs btn-danger';
-            }
-          });
-          return a;
-        };
-        const line = (html, ...buttons) => {
-          const row = document.createElement('div');
-          row.style.cssText = 'display:flex;justify-content:space-between;gap:6px;margin-bottom:6px';
-          row.innerHTML = `<span>${html}</span>`;
-          const right = document.createElement('span');
-          right.style.whiteSpace = 'nowrap';
-          buttons.forEach((b) => right.append(b));
-          row.append(right);
-          wrap.append(row);
-        };
+        const button = (label, onClick, cls, confirmText) => makeActionButton(label, onClick, { cls, confirmText });
+        const line = (html, ...buttons) => wrap.append(makeRow(html, ...buttons));
         const heading = (text) => {
           const h = document.createElement('div');
           h.style.cssText = 'font-weight:bold;margin:6px 0 3px';
@@ -285,6 +253,15 @@
 
         if (crew.length) {
           heading('🎓 Opgeleid personeel op het juiste voertuig');
+          const safe = crew.filter((c) => c.type !== 'transfer');
+          if (safe.length > 1) {
+            line(
+              '<small class="text-muted">Alle koppelingen in één keer (verplaatsen blijft per voertuig, met bevestiging)</small>',
+              button(`Koppel alles (${safe.length})`, async () => {
+                for (const c of safe) await executeCrewStep(c);
+              })
+            );
+          }
           crew.forEach((c) => {
             const who = c.people.map((p) => p.name).join(', ');
             const what = `<b>${short(c.vehicle.caption)}</b> <small class="text-muted">· ${short(c.station.caption)}</small><br><small>${
