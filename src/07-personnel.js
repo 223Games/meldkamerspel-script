@@ -170,6 +170,89 @@
   const bindPerson = (vehicleId, personId) => setBinding(vehicleId, personId, true);
   const unbindPerson = (vehicleId, personId) => setBinding(vehicleId, personId, false);
 
+  /**
+   * Crew plan for specialist vehicles: trained people on the right vehicle, or moved to a post that has it.
+   * Steps (in order, per vehicle): bind free trained people here; re-bind trained people who sit on another
+   * vehicle at this post; otherwise transfer trained people from a post that can spare them (they keep ≥10 staff).
+   * Pure data: nothing is executed here.
+   */
+  function planSpecialistCrew(data, transfersLeft) {
+    const steps = [];
+    const used = new Set(); // person ids already planned for another vehicle
+    const spare = new Map(data.stationRows.map((r) => [r.station.id, r.transferable]));
+    let transfersRemaining = transfersLeft;
+    const reusable = (p, key) => !used.has(p.id) && (!p.boundVehicleId || (p.boundVehicleId > 0 && p.boundRequiresKey !== key));
+
+    [...data.specialistVehicles]
+      .sort((a, b) => a.need - b.need)
+      .forEach((s) => {
+        if (!s.key) return; // education key unknown: nobody has it yet
+        let have = s.boundHere.length;
+        // 1. free trained people at this post
+        const free = s.free.filter((p) => !used.has(p.id)).slice(0, Math.max(0, s.full - have));
+        if (free.length) {
+          free.forEach((p) => used.add(p.id));
+          steps.push({ type: 'bind', vehicle: s.vehicle, station: s.station, people: free });
+          have += free.length;
+        }
+        // 2. trained people at this post bound to a vehicle that does not need them
+        if (have < s.need) {
+          const mis = s.qualified.filter((p) => reusable(p, s.key) && p.boundVehicleId > 0).slice(0, s.need - have);
+          if (mis.length) {
+            mis.forEach((p) => used.add(p.id));
+            steps.push({ type: 'rebind', vehicle: s.vehicle, station: s.station, people: mis });
+            have += mis.length;
+          }
+        }
+        // 3. other posts: trained people not needed there, donor keeps its minimum staff
+        if (have < s.need && transfersRemaining > 0) {
+          const donors = data.stationRows
+            .filter((r) => r.station.id !== s.station.id && spare.get(r.station.id) > 0)
+            .map((r) => ({ r, people: r.staff.filter((p) => p.keys.includes(s.key) && reusable(p, s.key)) }))
+            .filter((d) => d.people.length)
+            .sort((a, b) => b.people.length - a.people.length);
+          for (const d of donors) {
+            const n = Math.min(s.need - have, d.people.length, spare.get(d.r.station.id), transfersRemaining);
+            if (n <= 0) continue;
+            const pick = d.people.slice(0, n);
+            pick.forEach((p) => used.add(p.id));
+            spare.set(d.r.station.id, spare.get(d.r.station.id) - n);
+            transfersRemaining -= n;
+            steps.push({ type: 'transfer', vehicle: s.vehicle, station: s.station, from: d.r.station, people: pick });
+            have += n;
+            if (have >= s.need) break;
+          }
+        }
+      });
+    return steps;
+  }
+
+  /** Runs one crew step with the game's own forms. Bound people are un-bound first; after a transfer they are bound on arrival. */
+  async function executeCrewStep(step) {
+    const unbindOthers = async () => {
+      for (const p of step.people) if (p.boundVehicleId > 0 && p.boundVehicleId !== step.vehicle.id) await unbindPerson(p.boundVehicleId, p.id);
+    };
+    if (step.type === 'bind') {
+      for (const p of step.people) await bindPerson(step.vehicle.id, p.id);
+      return true;
+    }
+    if (step.type === 'rebind') {
+      await unbindOthers();
+      for (const p of step.people) await bindPerson(step.vehicle.id, p.id);
+      return true;
+    }
+    await unbindOthers(); // a bound person cannot be moved
+    const ok = await transferPersonnel(step.station.id, step.people.map((p) => p.id));
+    if (ok) {
+      try {
+        for (const p of step.people) await bindPerson(step.vehicle.id, p.id); // best-effort: they may need a moment to show up
+      } catch (e) {
+        log('Bind after transfer failed (do it by hand)', e.message);
+      }
+    }
+    return ok;
+  }
+
   /** Builds the complete picture; pure data, no UI. */
   // Panels ask for this several times at once (plan, redistribution, personnel): share one result for 15 s
   let personnelCache = null;
@@ -203,6 +286,11 @@
 
     const vehicleById = new Map(vehicles.map((v) => [v.id, v]));
     const requiredKeyOfVehicle = (v) => keyOf(typeInfo[v.vehicle_type]?.education);
+    // What a bound person is bound to (null = free / unknown vehicle): lets the crew planner see who can be re-used
+    people.forEach((p) => {
+      const bound = p.boundVehicleId > 0 ? vehicleById.get(p.boundVehicleId) : null;
+      p.boundRequiresKey = bound ? requiredKeyOfVehicle(bound) : null;
+    });
 
     // Per station
     const stationRows = stations.map((s, i) => {
@@ -491,6 +579,20 @@
         wrap.append(el('<em>Je hebt nog geen voertuigen die een opleiding vereisen.</em>'));
         return wrap;
       }
+      const crewPlan = planSpecialistCrew(data, transfer.remaining);
+      const safeSteps = crewPlan.filter((x) => x.type !== 'transfer');
+      if (safeSteps.length) {
+        const n = safeSteps.reduce((t, x) => t + x.people.length, 0);
+        wrap.append(
+          row(
+            `⚡ <b>${n} opgeleide persoon/personen vastzetten op het juiste voertuig</b><br><small class="text-muted">Koppelen reserveert ze voor dat voertuig; verplaatsen tussen posten blijft per voertuig hieronder.</small>`,
+            actionButton(`Koppel alles (${n})`, async () => {
+              for (const step of safeSteps) await executeCrewStep(step);
+              return true;
+            })
+          )
+        );
+      }
       data.specialistVehicles.forEach((s) => {
         const v = s.vehicle;
         const base = `<b>${short(v.caption)}</b> <small class="text-muted">· ${short(s.station.caption)} · vereist ${escapeHtml(
@@ -550,25 +652,20 @@
           return;
         }
 
-        // Nobody here: transfer from another station
-        const donors = data.stationRows
-          .filter((r) => r.station.id !== s.station.id && r.transferable > 0)
-          .map((r) => ({ r, people: r.staff.filter((p) => s.key && p.keys.includes(s.key) && !p.boundVehicleId) }))
-          .filter((d) => d.people.length)
-          .sort((a, b) => b.people.length - a.people.length);
-        if (donors.length && transfer.remaining > 0) {
-          const d = donors[0];
-          const pick = d.people.slice(0, Math.min(missing, d.r.transferable, transfer.remaining));
+        // Nobody here: move trained people from a post that can spare them (un-binds them first when needed)
+        const move = crewPlan.find((x) => x.type === 'transfer' && x.vehicle.id === v.id);
+        if (move) {
+          const pick = move.people;
           wrap.append(
             row(
               `❌ ${base}<small>Geen opgeleid personeel op deze post. ${pick.length}× ${escapeHtml(
                 s.info.education
-              )} beschikbaar in ${short(d.r.station.caption)}.</small>`,
+              )} beschikbaar in ${short(move.from.caption)}; ze worden daarna meteen op dit voertuig gekoppeld.</small>`,
               actionButton(
                 `Verplaats ${pick.length}`,
-                () => transferPersonnel(s.station.id, pick.map((p) => p.id)),
+                () => executeCrewStep(move),
                 'btn-warning',
-                `${pick.map((p) => p.name).join(', ')} van ${d.r.station.caption.trim()} naar ${s.station.caption.trim()} verplaatsen?\n\nDit kan NIET ongedaan worden en kost ${pick.length} van je ${transfer.remaining} verplaatsingen deze week.`
+                `${pick.map((p) => p.name).join(', ')} van ${move.from.caption.trim()} naar ${s.station.caption.trim()} verplaatsen en op ${v.caption.trim()} koppelen?\n\nDit kan NIET ongedaan worden en kost ${pick.length} van je ${transfer.remaining} verplaatsingen deze week.`
               )
             )
           );

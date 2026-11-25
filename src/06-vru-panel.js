@@ -211,7 +211,7 @@
             opt: c.querySelectorAll('[data-mks-specialist="opt"]').length,
           })),
           section('🔀 Herverdelen: voertuigen & personeel', await renderRedistribution(), (c) => ({
-            act: buttons(c, (t) => /^(Hernoem|Verplaats)/.test(t)).length,
+            act: buttons(c, (t) => /^(Hernoem|Verplaats|Koppel)/.test(t)).length,
           })),
           section('📚 Inzetgeheugen per melding', await renderMissionMemory()),
           section('🗺️ VRU-voortgang', renderProgress(fireStations, buildings, vehicles), (c) => ({

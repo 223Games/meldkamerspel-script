@@ -223,7 +223,8 @@
           wrap.append(h);
         };
 
-        if (!moves.length && !renames.length && !stuck.length && !transfers.length) {
+        const crew = planSpecialistCrew(data, transferInfo.remaining);
+        if (!moves.length && !renames.length && !stuck.length && !transfers.length && !crew.length) {
           wrap.innerHTML = '<em>Alles staat op de juiste post en het personeel is in balans. ✅</em>';
           return;
         }
@@ -278,6 +279,26 @@
                 'btn-warning',
                 `${t.people.length} personeel (${t.people.map((p) => p.name).join(', ')}) van ${t.from.caption.trim()} naar ${t.to.caption.trim()} verplaatsen?\n\nDit kan NIET ongedaan worden.`
               )
+            );
+          });
+        }
+
+        if (crew.length) {
+          heading('🎓 Opgeleid personeel op het juiste voertuig');
+          crew.forEach((c) => {
+            const who = c.people.map((p) => p.name).join(', ');
+            const what = `<b>${short(c.vehicle.caption)}</b> <small class="text-muted">· ${short(c.station.caption)}</small><br><small>${
+              c.type === 'transfer'
+                ? `${c.people.length}× opgeleid in ${short(c.from.caption)} (${escapeHtml(who)}): hier staat het voertuig. Verplaatsen en daarna koppelen.`
+                : c.type === 'rebind'
+                  ? `${escapeHtml(who)} zit op een ander voertuig: herkoppelen.`
+                  : `${escapeHtml(who)} opgeleid maar niet gekoppeld: vastzetten.`
+            }</small>`;
+            line(
+              `${c.type === 'transfer' ? '➡️' : '🔗'} ${what}`,
+              c.type === 'transfer'
+                ? button('Verplaats', () => executeCrewStep(c), 'btn-warning', `${who} van ${c.from.caption.trim()} naar ${c.station.caption.trim()} verplaatsen en op ${c.vehicle.caption.trim()} koppelen?\n\nDit kan NIET ongedaan worden.`)
+                : button('Koppel', () => executeCrewStep(c))
             );
           });
         }
