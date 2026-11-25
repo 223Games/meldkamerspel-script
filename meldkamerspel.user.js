@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.9.0
+// @version      7.10.0
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -2468,6 +2468,10 @@
           section('🧑‍🚒 Specialisten: ontdekt & thuiskazerne', await renderSpecialists(), (c) => ({
             act: c.querySelectorAll('[data-mks-specialist="act"]').length,
             opt: c.querySelectorAll('[data-mks-specialist="opt"]').length,
+          })),
+          section('🎓 Opleidingen: wachtrij voor de academie', await renderTraining(), (c) => ({
+            act: c.querySelectorAll('[data-mks-training="act"]').length,
+            opt: c.querySelectorAll('[data-mks-training="opt"]').length,
           })),
           section('🔀 Herverdelen: voertuigen & personeel', await renderRedistribution(), (c) => ({
             act: buttons(c, (t) => /^(Hernoem|Verplaats|Koppel)/.test(t)).length,
@@ -5665,6 +5669,197 @@ ${rows
     return s?.ok
       ? `Synchronisatie: ${when} · gist ${gistId} · apparaten: ${s.devices.join(', ')}`
       : `Synchronisatie: ${s ? `mislukt (${s.error})` : 'wacht op eerste run'} · gist ${gistId || '(nog geen)'}`;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Training queue: what to train next, ready for when a classroom frees */
+  /* ------------------------------------------------------------------ */
+
+  const NL_MONTHS = { jan: 0, feb: 1, mrt: 2, apr: 3, mei: 4, jun: 5, jul: 6, aug: 7, sep: 8, okt: 9, nov: 10, dec: 11 };
+
+  /** "ma 30 nov 2026 19:33:21 CET" → timestamp (local time of the player's browser); null when unreadable. */
+  function parseDutchDate(text) {
+    const m = String(text).match(/(\d{1,2})\s+([a-z]{3})[a-z]*\.?\s+(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/i);
+    if (!m || !(m[2].toLowerCase() in NL_MONTHS)) return null;
+    return new Date(Number(m[3]), NL_MONTHS[m[2].toLowerCase()], Number(m[1]), Number(m[4]), Number(m[5]), Number(m[6] || 0)).getTime();
+  }
+
+  /** Academy page → whether a classroom is free, the running lessons and the price of an extra classroom. */
+  function parseAcademyDoc(doc) {
+    const lessons = doc.querySelector('#schooling')?.textContent.replace(/\s+/g, ' ').trim() || '';
+    const running = [...doc.querySelectorAll('#schooling_running a[href]')]
+      .filter((a) => /^\/schoolings\/\d+$/.test(a.getAttribute('href')))
+      .map((a) => {
+        const cells = [...(a.closest('tr')?.children || [])].map((c) => c.textContent.replace(/\s+/g, ' ').trim());
+        return { id: Number(a.getAttribute('href').split('/').pop()), education: a.textContent.trim(), freeSeats: Number(cells[2]) || 0 };
+      });
+    const ext = doc.querySelector('#ausbauten')?.textContent.replace(/\s+/g, ' ') || '';
+    const price = ext.match(/Extra klaslokaal.*?(\d{1,3}(?:\.\d{3})+)\s*Credits/i)?.[1];
+    return {
+      free: !/bezet/i.test(lessons) && lessons.length > 0,
+      lessonsText: lessons.slice(0, 200),
+      running,
+      extraClassroomPrice: price ? Number(price.replace(/\./g, '')) : null,
+    };
+  }
+
+  /** One running lesson: when it ends and how many people take part. */
+  function parseSchoolingDoc(doc) {
+    const text = doc.body.textContent.replace(/\s+/g, ' ');
+    const rows = [...doc.querySelectorAll('table tr')].filter((r) => r.querySelector('td'));
+    return {
+      endsAt: parseDutchDate(text.match(/loopt tot ([^.]*?CES?T|[^.]*?\d{2}:\d{2}(?::\d{2})?)/i)?.[1] || ''),
+      people: rows.length,
+      station: rows[0]?.children[3]?.textContent.trim() || '',
+    };
+  }
+
+  let academyStateCache = null;
+  async function loadAcademyState() {
+    if (academyStateCache && Date.now() - academyStateCache.ts < 60e3) return academyStateCache.value;
+    const buildings = await fetchJson('/api/buildings');
+    const academies = [];
+    for (const b of buildings.filter((x) => x.building_type === 4)) {
+      const info = parseAcademyDoc(await fetchDoc(`/buildings/${b.id}`));
+      for (const lesson of info.running) Object.assign(lesson, parseSchoolingDoc(await fetchDoc(`/schoolings/${lesson.id}`)));
+      academies.push({ id: b.id, caption: b.caption.trim(), ...info });
+    }
+    const value = { academies };
+    academyStateCache = { ts: Date.now(), value };
+    return value;
+  }
+
+  /**
+   * Ordered list of educations worth starting, so they can go into a classroom the moment one is free.
+   * Priority: vehicle already owned but nobody trained (it stands idle) → missed missions → unlocked mission types.
+   * Educations already running are flagged, not repeated.
+   */
+  function buildTrainingQueue(specialists, academyState) {
+    const running = new Map();
+    (academyState?.academies || []).forEach((a) => a.running.forEach((l) => running.set(l.education, { ...l, academy: a })));
+    return specialists
+      .filter((sp) => sp.education && !sp.trained)
+      .map((sp) => {
+        const lesson = running.get(sp.education);
+        const owned = sp.ownedAt.length > 0;
+        return {
+          education: sp.education,
+          vehicle: sp.name,
+          owned,
+          missions: sp.missions || 0,
+          unlocked: sp.unlocked || 0,
+          people: Math.max(1, sp.shop?.minCrew || 1),
+          station: sp.home.station || sp.ownedAt[0] || null,
+          running: lesson || null,
+          score: (owned ? 3000 : 0) + (sp.missions || 0) * 100 + (sp.unlocked || 0) * 10,
+        };
+      })
+      .sort((a, b) => !!a.running - !!b.running || b.score - a.score);
+  }
+
+  async function renderTraining() {
+    const wrap = document.createElement('div');
+    wrap.innerHTML = '<em>Opleidingen laden…</em>';
+    (async () => {
+      try {
+        const [data, buildings, vehicles, academyState] = await Promise.all([
+          analysePersonnel(),
+          fetchJson('/api/buildings'),
+          fetchJson('/api/vehicles'),
+          loadAcademyState(),
+        ]);
+        const queue = buildTrainingQueue(collectSpecialists(data, buildings, vehicles), academyState);
+        const short = (caption) => escapeHtml(caption.trim().replace(`${CONFIG.vru.prefix} `, ''));
+        const open = (url) => (typeof unsafeWindow.lightboxOpen === 'function' ? unsafeWindow.lightboxOpen(url) : window.open(url, '_blank'));
+        const when = (ts) => {
+          if (!ts) return 'onbekend';
+          const left = ts - Date.now();
+          const days = Math.floor(left / 864e5);
+          const hours = Math.floor((left % 864e5) / 36e5);
+          return `${new Date(ts).toLocaleString('nl-NL', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} (${
+            left <= 0 ? 'nu' : days ? `over ${days}d ${hours}u` : `over ${hours}u`
+          })`;
+        };
+        wrap.innerHTML = '';
+        const line = (html, attr, ...buttons) => {
+          const r = document.createElement('div');
+          r.style.cssText = 'display:flex;justify-content:space-between;gap:6px;margin-bottom:6px';
+          if (attr) r.dataset.mksTraining = attr;
+          r.innerHTML = `<span>${html}</span>`;
+          const right = document.createElement('span');
+          right.style.whiteSpace = 'nowrap';
+          buttons.forEach((b) => right.append(b));
+          r.append(right);
+          wrap.append(r);
+        };
+        const btn = (label, url) => {
+          const a = document.createElement('a');
+          a.href = '#';
+          a.className = 'btn btn-xs btn-default';
+          a.textContent = label;
+          a.addEventListener('click', (e) => {
+            e.preventDefault();
+            open(url);
+          });
+          return a;
+        };
+
+        if (!academyState.academies.length) {
+          line('🏫 <b>Nog geen academie.</b> <small>Bouw er een (Brandweer, Academie) om zelf specialisten op te leiden; de wachtrij hieronder staat dan klaar.</small>');
+        }
+        academyState.academies.forEach((a) => {
+          const first = a.running.map((l) => l.endsAt).filter(Boolean).sort((x, y) => x - y)[0];
+          line(
+            `🏫 <b>${short(a.caption)}</b><br><small>${
+              a.free
+                ? '<b class="text-success">Klaslokaal vrij</b>: start nu de eerstvolgende opleiding uit de wachtrij.'
+                : `Alle klaslokalen bezet${first ? `: eerstvolgende vrij ${when(first)}` : ''}.`
+            }${a.extraClassroomPrice ? ` Extra klaslokaal: ${formatCredits(a.extraClassroomPrice)}.` : ''}</small>`,
+            a.free && queue.some((q) => !q.running) ? 'act' : null,
+            btn('Academie', `/buildings/${a.id}`)
+          );
+          a.running.forEach((l) =>
+            line(
+              `▶️ <b>${escapeHtml(l.education)}</b> <small class="text-muted">· bezig${l.people ? ` · ${l.people} personen${l.station ? ` van ${escapeHtml(l.station.replace(`${CONFIG.vru.prefix} `, ''))}` : ''}` : ''} · klaar ${when(l.endsAt)}</small>`
+            )
+          );
+        });
+
+        if (!queue.length) {
+          wrap.append(Object.assign(document.createElement('small'), { className: 'text-muted', textContent: 'Wachtrij leeg: voor alle bekende specialisten is iemand opgeleid. ✅' }));
+          return;
+        }
+        const h = document.createElement('div');
+        h.innerHTML = '<b>Wachtrij: dit opleiden zodra er een klaslokaal vrij is</b>';
+        h.style.margin = '8px 0 4px';
+        wrap.append(h);
+        let n = 0;
+        queue.forEach((q) => {
+          const why = [
+            q.owned ? '<b>voertuig staat al stil</b>' : null,
+            q.missions ? `${q.missions}× gemist (14 d)` : null,
+            q.unlocked ? `${q.unlocked} meldingstype(s)` : null,
+          ].filter(Boolean);
+          line(
+            `${q.running ? '▶️' : `<b>${++n}.</b>`} <b>${escapeHtml(q.education)}</b> <small class="text-muted">· voor ${escapeHtml(q.vehicle)}</small><br><small>${
+              q.running
+                ? `loopt al, klaar ${when(q.running.endsAt)}`
+                : `${q.people} personen${q.station ? ` van <b>${short(q.station.caption)}</b>` : ''}${why.length ? ` · ${why.join(' · ')}` : ''}`
+            }</small>`,
+            q.running ? null : 'opt'
+          );
+        });
+        const foot = document.createElement('small');
+        foot.className = 'text-muted';
+        foot.textContent =
+          'Kies bij het starten personeel van de aangegeven post: de opgeleiden kunnen dan direct op hun voertuig worden gekoppeld (zie Herverdelen). Duur en kosten per opleiding toont het spel pas bij een vrij klaslokaal.';
+        wrap.append(foot);
+      } catch (e) {
+        console.error('[MKS→HA] Training queue failed', e);
+        wrap.innerHTML = `<div class="alert alert-danger">Opleidingen mislukt: ${escapeHtml(e.message)}</div>`;
+      }
+    })();
+    return wrap;
   }
   boot();
 })();

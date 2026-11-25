@@ -210,6 +210,10 @@
             act: c.querySelectorAll('[data-mks-specialist="act"]').length,
             opt: c.querySelectorAll('[data-mks-specialist="opt"]').length,
           })),
+          section('🎓 Opleidingen: wachtrij voor de academie', await renderTraining(), (c) => ({
+            act: c.querySelectorAll('[data-mks-training="act"]').length,
+            opt: c.querySelectorAll('[data-mks-training="opt"]').length,
+          })),
           section('🔀 Herverdelen: voertuigen & personeel', await renderRedistribution(), (c) => ({
             act: buttons(c, (t) => /^(Hernoem|Verplaats|Koppel)/.test(t)).length,
           })),
