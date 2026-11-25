@@ -47,6 +47,22 @@
     }
   }
 
+  /**
+   * Event missions (Sinterklaas, Herfst…): the game does not label them one way, so use several signals:
+   * an event list/filter type, an event class or attribute, or a keyword from the settings in the caption.
+   */
+  function isEventEntry(entry, caption) {
+    const type = entry.getAttribute('data-mission-type-filter') || '';
+    if (type && !['emergency', 'sicherheitswache', 'krankentransporte'].includes(type)) return true;
+    if (/event/i.test(entry.parentElement?.id || '') || /event/i.test(entry.className) || entry.hasAttribute('data-event')) return true;
+    const words = String(GM_getValue('mks_event_words', 'sinterklaas|pakjes|herfst|halloween|kerst|oud en nieuw|koningsdag')).trim();
+    try {
+      return !!words && new RegExp(words, 'i').test(caption);
+    } catch (e) {
+      return false;
+    }
+  }
+
   /** Missions in one of the game's sidebar lists, read from the page itself. */
   function readMissionList(selector) {
     return [...mainDocument().querySelectorAll(`${selector} .missionSideBarEntry`)]
@@ -55,9 +71,11 @@
         const id = entry.getAttribute('mission_id');
         const panel = entry.querySelector(`#mission_panel_${id}`);
         const missingText = (entry.querySelector(`#mission_missing_${id}`)?.textContent || '').trim();
+        const caption = (entry.querySelector(`#mission_caption_${id}`)?.firstChild?.textContent || 'Melding').trim().replace(/,$/, '');
         return {
           id,
-          caption: (entry.querySelector(`#mission_caption_${id}`)?.firstChild?.textContent || 'Melding').trim().replace(/,$/, ''),
+          caption,
+          isEvent: isEventEntry(entry, caption),
           typeId: entry.getAttribute('mission_type_id'),
           lat: parseFloat(entry.getAttribute('latitude')),
           lng: parseFloat(entry.getAttribute('longitude')),
@@ -86,8 +104,10 @@
    * (by credits), then more missing, then the rest. Shared by the priorities list and the worklist.
    */
   function rankOwnMissions(credits) {
+    const boost = (m) => (m.isEvent && setting('eventPriority') ? 5e6 : 0); // events expire, so they go first
     const score = (m) => {
       const missing = missingCount(m);
+      if (m.isEvent && setting('eventPriority')) return boost(m) + (credits[m.typeId] || 0);
       if (missing === 1) return 3e6 + (credits[m.typeId] || 0);
       if (m.state === 'red') return 2e6 + (credits[m.typeId] || 0);
       if (missing > 1) return 1e6 + (credits[m.typeId] || 0) / missing;
@@ -137,7 +157,7 @@
         if (!ranked.length) wrap.append(Object.assign(document.createElement('em'), { textContent: 'Alles loopt. 👍' }));
         ranked.slice(0, 12).forEach((m) => {
           const missing = missingCount(m);
-          wrap.append(row(m, missing === 1 ? '<span class="label label-success">bijna klaar</span>' : missing ? `${missing} missen` : m.state === 'red' ? 'nog niet gealarmeerd' : ''));
+          wrap.append(row(m, m.isEvent ? '<span class="label label-warning">evenement</span>' + (missing ? ` ${missing} missen` : '') : missing === 1 ? '<span class="label label-success">bijna klaar</span>' : missing ? `${missing} missen` : m.state === 'red' ? 'nog niet gealarmeerd' : ''));
         });
 
         // Team radar: shared missions near your stations

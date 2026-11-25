@@ -72,7 +72,7 @@ w.map = {
 };
 w.DOMPoint = function (x, y) { Object.assign(this, { x, y }); };
 w.user_id = 1;
-Object.assign(w, { GM_getValue: (k, d) => d, GM_setValue: () => {}, GM_registerMenuCommand: () => {}, GM_xmlhttpRequest: () => {}, unsafeWindow: w });
+Object.assign(w, { __gm: {}, GM_getValue: (k, d) => (k in w.__gm ? w.__gm[k] : d), GM_setValue: () => {}, GM_registerMenuCommand: () => {}, GM_xmlhttpRequest: () => {}, unsafeWindow: w });
 w.eval('const GM_getValue=window.GM_getValue,GM_setValue=window.GM_setValue,GM_registerMenuCommand=window.GM_registerMenuCommand,GM_xmlhttpRequest=window.GM_xmlhttpRequest,unsafeWindow=window;' + body);
 
 (async () => {
@@ -141,7 +141,19 @@ w.eval('const GM_getValue=window.GM_getValue,GM_setValue=window.GM_setValue,GM_r
   const gameNextDoc = { location: { pathname: '/missions/502', href: '/missions/502' } };
   const redirected = w.__mks.followWorklist(gameNextDoc);
 
+  // Event missions go first (they expire); setting off → back to the normal order
+  w.document.getElementById('mission_list').insertAdjacentHTML('beforeend', entry('505', 'Sinterklaas pakjes bezorgen', 'red', 1));
+  const nextCaption = async () => {
+    const d = new JSDOM(`<form id="mission-form"><a class="btn btn-success alert_next" href="#"></a></form>`, { url: 'https://www.meldkamerspel.com/missions/500' }).window.document;
+    await w.__mks.addWorklistButton(d);
+    return d.getElementById('mks_worklist_btn')?.textContent || '';
+  };
+  const eventFirst = await nextCaption();
+  w.__gm.opt_eventPriority = false;
+  const eventOff = await nextCaption();
+
   const checks = {
+    eventsFirst: eventFirst === '▶ Alarmeren → Sinterklaas pakjes bezorgen' && eventOff === '▶ Alarmeren → Bijna klaar',
     worklistPicksAlmostDone: wlText === '▶ Alarmeren → Bijna klaar' && gameNextClicked && pending?.id === '503',
     worklistRedirects: redirected && gameNextDoc.location.href === '/missions/503' && !w.sessionStorage.getItem('mks_worklist_next'),
     brushRecognised: brushSelected.join() === '52' && !/brush/.test(brushText),
