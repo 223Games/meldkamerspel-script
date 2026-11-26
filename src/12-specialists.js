@@ -25,6 +25,8 @@
     { typeIds: [12, 14, 15], match: /brush|natuurbrand|\bNBV?\b/i, posts: ['01', '03', '07', '10', '22', '30', '31', '32', '33', '35', '50', '51', '52', '53', '54', '55', '64', '66'], real: 'Natuurbrandbestrijdingsvoertuig (NBV)' },
     // Brandbase regio 09 (Nov 2026): Brandweervaartuig middel/klein (BRV) at Bunschoten, Vinkeveen, Breukelen, Vianen; no blusrobot in the VRU
     { match: /blusboot|brandweervaartuig|\bBRV\b|fire_boat/i, posts: ['04', '14', '36', '57'], real: 'Brandweervaartuig (BRV)' },
+    // Brandbase 09-9017 "Verkenningsvoertuig TDV-WO": one, regional (09-80), not at a post
+    { typeIds: [11], match: /verkenningseenheid|\bDB-VEB\b|\bVEB\b/i, hq: true, real: 'Verkenningseenheid VEB (09-9017, regionaal)' },
     // Droneteams / TDV are regional (09-80), not at a post: the game needs a fire station
     { match: /drone|\bTDV\b|verkenningsteam/i, hq: true, real: 'Droneteam / TDV (regionaal)' },
     { typeIds: [33], match: /waterongeval|duik/i, posts: ['01', '04', '13', '39', '44', '59'], real: 'Waterongevallen' },
