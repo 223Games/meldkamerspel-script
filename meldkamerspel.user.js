@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.15.1
+// @version      7.15.2
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -5416,32 +5416,57 @@ ${rows
   }
 
   /** Every education the vehicle shop asks for: which vehicles need it, how many you own, how many people are trained. */
-  /** Posts with trained, unbound people but no car that needs them: the best place to buy the next one. */
+  /**
+   * Trained people without a car on their post. The car goes where the real VRU keeps it (Brandbase) first;
+   * only without a VRU place do we fall back to the post with the most idle trained people.
+   */
   function renderIdleTrained(data) {
     const wrap = document.createElement('div');
     if (!data.idleTrained?.length) return wrap;
     wrap.innerHTML = '<div style="margin-top:8px"><b>🎓 Opgeleid personeel zonder auto op de post</b></div>';
     data.idleTrained.forEach(({ education, types, owned, posts }) => {
-      const best = posts[0];
-      const row = document.createElement('div');
-      row.setAttribute('data-mks-specialist', 'opt');
-      row.style.cssText = 'display:flex;justify-content:space-between;gap:6px;margin:3px 0';
-      // Shop names are long ("DA-HOD 1 in Bezit Hoofd Officier…"): keep the abbreviation, at most 4
+      const idleAt = (st) => posts.find((x) => x.station.id === st.id)?.idle || 0;
+      const trainedAt = (st) => data.stationRows?.find((r) => r.station.id === st.id)?.perEducation?.[education] || 0;
+      // Real VRU place per vehicle type; "open" = no such car there yet
+      const placed = types
+        .map((t) => ({ t, home: specialistHome({ name: t.name, education, shop: { typeId: t.typeId } }, data.stations, data.stationRows) }))
+        .filter((x) => x.home.station && x.home.vru)
+        .map((x) => ({ ...x, has: data.vehicles.some((v) => v.vehicle_type === x.t.typeId && v.building_id === x.home.station.id) }));
+      const open = placed.find((x) => !x.has);
+      let target;
+      let advice;
+      if (open) {
+        target = open.home.station;
+        const here = trainedAt(target);
+        advice = `📍 VRU-plek: <b>${shortPost(target.caption)}</b> (${escapeHtml(open.home.why)}). ${
+          here ? `${here} opgeleid op die post.` : 'Daar is nog niemand opgeleid: verplaats of train eerst.'
+        }`;
+      } else if (placed.length) {
+        advice = `✅ Staat al op de VRU-plek (${placed.map((x) => shortPost(x.home.station.caption)).join(', ')}). Deze extra opgeleiden wachten op een tweede auto.`;
+      } else {
+        target = posts[0].station;
+        advice = `Geen VRU-plek bekend: een (extra) auto op ${shortPost(target.caption)} is meteen bemand.`;
+      }
       const abbr = [...new Set(types.map((t) => t.name.split(/\s+/)[0]))];
       const typeText = abbr.slice(0, 4).join(' / ') + (abbr.length > 4 ? ` +${abbr.length - 4}` : '');
       const list = posts.map((x) => `${shortPost(x.station.caption)} (${x.idle})`).join(', ');
-      row.innerHTML = `<span>🟡 <b>${escapeHtml(education)}</b> <small class="text-muted">· ${escapeHtml(typeText)} · ${owned ? `${owned}× in bezit elders` : 'nog geen auto'}</small><br><small>${list}</small><br><small class="text-muted">Een (extra) auto op ${shortPost(
-        best.station.caption
-      )} is meteen bemand.</small></span>`;
-      const a = document.createElement('a');
-      a.href = '#';
-      a.className = 'btn btn-xs btn-default';
-      a.textContent = 'Winkel';
-      a.addEventListener('click', (e) => {
-        e.preventDefault();
-        openLightbox(`/buildings/${best.station.id}/vehicles/new`);
-      });
-      row.append(a);
+      const row = document.createElement('div');
+      row.setAttribute('data-mks-specialist', target ? 'opt' : 'ok');
+      row.style.cssText = 'display:flex;justify-content:space-between;gap:6px;margin:3px 0';
+      row.innerHTML = `<span>${target ? '🟡' : '🟢'} <b>${escapeHtml(education)}</b> <small class="text-muted">· ${escapeHtml(typeText)} · ${
+        owned ? `${owned}× in bezit` : 'nog geen auto'
+      }</small><br><small>Opgeleid zonder auto: ${list}</small><br><small>${advice}</small></span>`;
+      if (target) {
+        const a = document.createElement('a');
+        a.href = '#';
+        a.className = 'btn btn-xs btn-default';
+        a.textContent = 'Winkel';
+        a.addEventListener('click', (e) => {
+          e.preventDefault();
+          openLightbox(`/buildings/${target.id}/vehicles/new`);
+        });
+        row.append(a);
+      }
       wrap.append(row);
     });
     return wrap;
