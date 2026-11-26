@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.15.0
+// @version      7.15.1
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -5426,10 +5426,11 @@ ${rows
       const row = document.createElement('div');
       row.setAttribute('data-mks-specialist', 'opt');
       row.style.cssText = 'display:flex;justify-content:space-between;gap:6px;margin:3px 0';
+      // Shop names are long ("DA-HOD 1 in Bezit Hoofd Officier…"): keep the abbreviation, at most 4
+      const abbr = [...new Set(types.map((t) => t.name.split(/\s+/)[0]))];
+      const typeText = abbr.slice(0, 4).join(' / ') + (abbr.length > 4 ? ` +${abbr.length - 4}` : '');
       const list = posts.map((x) => `${shortPost(x.station.caption)} (${x.idle})`).join(', ');
-      row.innerHTML = `<span>🟡 <b>${escapeHtml(education)}</b> <small class="text-muted">· ${escapeHtml(
-        types.map((t) => t.name).join(' / ')
-      )} · ${owned ? `${owned}× in bezit elders` : 'nog geen auto'}</small><br><small>${list}</small><br><small class="text-muted">Een (extra) auto op ${shortPost(
+      row.innerHTML = `<span>🟡 <b>${escapeHtml(education)}</b> <small class="text-muted">· ${escapeHtml(typeText)} · ${owned ? `${owned}× in bezit elders` : 'nog geen auto'}</small><br><small>${list}</small><br><small class="text-muted">Een (extra) auto op ${shortPost(
         best.station.caption
       )} is meteen bemand.</small></span>`;
       const a = document.createElement('a');
