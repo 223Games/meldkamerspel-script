@@ -422,18 +422,51 @@
 
       const list = el('');
       list.style.marginTop = '6px';
-      statuses
-        .sort((a, b) => a.s.code.localeCompare(b.s.code))
-        .forEach(({ b, s }) => {
-          const complete = !s.missing.length;
+      // Only what is still open: completed posts/vehicles are recorded once and counted, not listed
+      const extras = vruExtrasStatus(stations, vehicles);
+      const doneKeys = [
+        ...statuses.filter((x) => !x.s.missing.length).map((x) => `post@${x.s.code}`),
+        ...extras.filter((i) => !i.missing).map((i) => i.key),
+      ];
+      const achieved = recordAchievements(doneKeys);
+      const openStations = statuses.filter((x) => x.s.missing.length).sort((a, b) => a.s.code.localeCompare(b.s.code));
+      const openExtras = extras.filter((i) => i.missing);
+      openStations.forEach(({ s }) =>
+        list.append(
+          el(
+            `<div style="margin-bottom:2px" data-mks-incomplete="1">🟡 09-${s.code} ${escapeHtml(VRU_STATIONS[s.code][0])} <small class="text-muted">${
+              s.ref.length - s.missing.length
+            }/${s.ref.length} · mist ${s.missing.map(([n, t]) => `${n} ${labelOf(t)}`).join(', ')}</small></div>`
+          )
+        )
+      );
+      if (openExtras.length) {
+        list.append(el('<div style="margin-top:6px"><b>Nog te halen: specials, aanhangers en regionaal</b></div>'));
+        // Group per vehicle kind: "DB-RI: 09-06, 09-37 (post nog niet gebouwd: 09-58)"
+        const byKind = new Map();
+        openExtras.forEach((i) => (byKind.get(i.x.id) || byKind.set(i.x.id, []).get(i.x.id)).push(i));
+        byKind.forEach((items, id) => {
+          const x = items[0].x;
+          const where = items.map((i) => `${i.where}${i.missing > 1 ? ` (${i.missing}×)` : ''}${i.unbuilt ? ' ⛔ post nog niet gebouwd' : ''}`).join(', ');
           list.append(
             el(
-              `<div style="margin-bottom:2px"${complete ? '' : ' data-mks-incomplete="1"'}>${complete ? '✅' : '🟡'} 09-${s.code} ${escapeHtml(VRU_STATIONS[s.code][0])} <small class="text-muted">${
-                s.ref.length - s.missing.length
-              }/${s.ref.length}${complete ? '' : ` · mist ${s.missing.map(([n, t]) => `${n} ${labelOf(t)}`).join(', ')}`}</small></div>`
+              `<div style="margin-bottom:2px" data-mks-incomplete="1">🟡 <b>${escapeHtml(x.label)}</b> <small class="text-muted">${escapeHtml(x.real)}</small><br><small>${where}</small></div>`
             )
           );
         });
+      }
+      const doneCount = Object.keys(achieved).length;
+      if (!openStations.length && !openExtras.length && !unbuilt.length) {
+        list.append(el(`<div><b>VRU compleet</b> <small class="text-muted">(${doneCount} onderdelen behaald)</small></div>`));
+      } else if (doneCount) {
+        list.append(el(`<div style="margin-top:4px"><small class="text-muted">${doneCount} onderdelen behaald en weggeschreven.</small></div>`));
+      }
+      const noGame = el(
+        `<details style="margin-top:4px"><summary><small class="text-muted">Echt in de VRU, geen spelvoertuig (${VRU_NO_GAME_EQUIVALENT.length})</small></summary>${VRU_NO_GAME_EQUIVALENT.map(
+          (t) => `<div><small class="text-muted">${escapeHtml(t)}</small></div>`
+        ).join('')}</details>`
+      );
+      list.append(noGame);
       if (unbuilt.length)
         list.append(
           el(
