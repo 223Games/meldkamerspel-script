@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.15.2
+// @version      7.15.3
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -5426,7 +5426,8 @@ ${rows
     wrap.innerHTML = '<div style="margin-top:8px"><b>🎓 Opgeleid personeel zonder auto op de post</b></div>';
     data.idleTrained.forEach(({ education, types, owned, posts }) => {
       const idleAt = (st) => posts.find((x) => x.station.id === st.id)?.idle || 0;
-      const trainedAt = (st) => data.stationRows?.find((r) => r.station.id === st.id)?.perEducation?.[education] || 0;
+      const eduKey = data.keyOf ? data.keyOf(education) : null;
+      const trainedAt = (st) => (eduKey ? data.people.filter((p) => p.buildingId === st.id && p.keys.includes(eduKey)).length : 0);
       // Real VRU place per vehicle type; "open" = no such car there yet
       const placed = types
         .map((t) => ({ t, home: specialistHome({ name: t.name, education, shop: { typeId: t.typeId } }, data.stations, data.stationRows) }))
