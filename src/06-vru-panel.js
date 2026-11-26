@@ -152,6 +152,7 @@
       </div>
       <div class="panel-body" style="padding:8px 10px"></div>`;
     const body = panel.querySelector('.panel-body');
+    const personnelLoader = personnelSections(() => render()); // former 👷 panel, now part of this one
 
     document.body.append(panel, button);
 
@@ -201,6 +202,10 @@
           .sort((a, b) => a.caption.trim().localeCompare(b.caption.trim()));
         const balance = credits.credits_user_current;
 
+        const personnelParts = await personnelLoader().catch((e) => {
+          console.error('[MKS→HA] Personnel parts failed', e);
+          return [];
+        });
         body.innerHTML = '';
         // All sections start collapsed; the counters show what is waiting inside (they follow the async content)
         const buttons = (c, test) => [...c.querySelectorAll('a.btn')].filter((a) => test(a.textContent.trim()));
@@ -225,6 +230,7 @@
           section('🔀 Herverdelen: voertuigen & personeel', await renderRedistribution(), (c) => ({
             act: buttons(c, (t) => /^(Hernoem|Verplaats|Koppel)/.test(t)).length,
           })),
+          ...personnelParts.map(([title, content]) => section(title, content, (c) => ({ act: buttons(c, (t) => /^Verplaats/.test(t)).length }))),
           section('📚 Inzetgeheugen per melding', await renderMissionMemory()),
           section('🗺️ VRU-voortgang', renderProgress(fireStations, buildings, vehicles), (c) => ({
             opt: c.querySelectorAll('[data-mks-incomplete]').length,

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.16.1
+// @version      7.17.0
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -62,7 +62,6 @@
       startVehicleTypeId: 17, // 17 = TS 6/7 (1 = TS 8/9, 9 = TS 4/5)
       autoHireDays: 3, // start recruitment after building (0 = off)
       panel: true, // 🚒 VRU panel on the main page (tasks, hiring, expansion, advice, progress)
-      personnelPanel: true, // 👷 personnel panel (specialists, binding, transfers, training advice)
     },
 
     debug: GM_getValue('opt_debug', false), // true = log every step to the browser console (F12)
@@ -150,7 +149,6 @@
         watchBuildForm();
         pollPendingHire();
         if (CONFIG.vru.panel) initPanel();
-        if (CONFIG.vru.personnelPanel) initPersonnelPanel();
       }
       startExtras();
     }
@@ -2485,6 +2483,7 @@
       </div>
       <div class="panel-body" style="padding:8px 10px"></div>`;
     const body = panel.querySelector('.panel-body');
+    const personnelLoader = personnelSections(() => render()); // former 👷 panel, now part of this one
 
     document.body.append(panel, button);
 
@@ -2534,6 +2533,10 @@
           .sort((a, b) => a.caption.trim().localeCompare(b.caption.trim()));
         const balance = credits.credits_user_current;
 
+        const personnelParts = await personnelLoader().catch((e) => {
+          console.error('[MKS→HA] Personnel parts failed', e);
+          return [];
+        });
         body.innerHTML = '';
         // All sections start collapsed; the counters show what is waiting inside (they follow the async content)
         const buttons = (c, test) => [...c.querySelectorAll('a.btn')].filter((a) => test(a.textContent.trim()));
@@ -2558,6 +2561,7 @@
           section('🔀 Herverdelen: voertuigen & personeel', await renderRedistribution(), (c) => ({
             act: buttons(c, (t) => /^(Hernoem|Verplaats|Koppel)/.test(t)).length,
           })),
+          ...personnelParts.map(([title, content]) => section(title, content, (c) => ({ act: buttons(c, (t) => /^Verplaats/.test(t)).length }))),
           section('📚 Inzetgeheugen per melding', await renderMissionMemory()),
           section('🗺️ VRU-voortgang', renderProgress(fireStations, buildings, vehicles), (c) => ({
             opt: c.querySelectorAll('[data-mks-incomplete]').length,
@@ -3189,54 +3193,16 @@
     return { stations, stationRows, people, vehicles, typeInfo, specialistVehicles, specialtyRows, idleTrained, stationCount, keyOf, hasAcademy: buildings.some((b) => b.building_type === FIRE_ACADEMY_TYPE) };
   }
 
-  function initPersonnelPanel() {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'btn btn-primary btn-sm';
-    button.style.cssText = 'position:fixed;left:100px;bottom:12px;z-index:9999;box-shadow:0 2px 6px rgba(0,0,0,.3);';
-    button.innerHTML = '👷 Personeel <span class="badge" style="display:none"></span>';
-    const badge = button.querySelector('.badge');
-
-    const panel = document.createElement('div');
-    panel.className = 'panel panel-default';
-    panel.style.cssText =
-      'position:fixed;left:12px;bottom:52px;z-index:10000;width:480px;max-width:calc(100vw - 24px);max-height:75vh;overflow:auto;display:none;box-shadow:0 4px 16px rgba(0,0,0,.35);font-size:13px;';
-    panel.innerHTML = `
-      <div class="panel-heading" style="display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:1">
-        <b>👷 Personeel & opleidingen</b>
-        <span><a href="#" class="mks-refresh" title="Vernieuwen">↻</a><a href="#" class="mks-close" title="Sluiten" style="margin-left:10px">✕</a></span>
-      </div>
-      <div class="panel-body" style="padding:8px 10px"></div>`;
-    const body = panel.querySelector('.panel-body');
-    document.body.append(panel, button);
-
-    const isOpen = () => panel.style.display !== 'none';
-    button.addEventListener('click', () => {
-      panel.style.display = isOpen() ? 'none' : 'block';
-      if (isOpen()) render();
-    });
-    panel.querySelector('.mks-close').addEventListener('click', (e) => {
-      e.preventDefault();
-      panel.style.display = 'none';
-    });
-    panel.querySelector('.mks-refresh').addEventListener('click', (e) => {
-      e.preventDefault();
-      invalidatePersonnel();
-      render();
-    });
-
+  /**
+   * Personnel parts of the VRU panel (the former separate 👷 panel): manual transfers and staff per post.
+   * Specialist binding/moves live in "Herverdelen", training in "Opleidingen", so nothing is shown twice.
+   * Returns a loader: [[title, element], …]; `refresh` re-renders the whole VRU panel after an action.
+   */
+  function personnelSections(refresh) {
     const el = (html) => {
       const div = document.createElement('div');
       div.innerHTML = html;
       return div;
-    };
-    const section = (title, content, open) => {
-      const d = document.createElement('details');
-      d.open = open;
-      d.style.marginBottom = '8px';
-      d.innerHTML = `<summary style="cursor:pointer;font-weight:bold;margin-bottom:4px">${title}</summary>`;
-      d.append(content);
-      return d;
     };
     const short = shortPost;
     const actionButton = (label, onClick, cls = 'btn-success', confirmText = null) =>
@@ -3245,45 +3211,22 @@
         confirmText,
         onDone: () => {
           invalidatePersonnel(); // data changed: next render must refetch
-          setTimeout(render, 900);
+          setTimeout(refresh, 900);
         },
       });
     const row = makeRow;
 
-    async function updateBadge() {
-      try {
-        const data = await analysePersonnel();
-        const problems = data.specialistVehicles.filter((s) => s.boundHere.length < s.need || s.overBound).length;
-        const missingSpecialists = data.specialtyRows.filter((s) => s.unlocked.length && !s.owned).length;
-        const total = problems + missingSpecialists;
-        badge.textContent = total;
-        badge.style.display = total ? 'inline-block' : 'none';
-      } catch (e) {
-        console.error('[MKS→HA] Personnel badge failed', e);
-      }
-    }
-    setTimeout(updateBadge, 4000);
-    setInterval(updateBadge, 15 * 60e3);
-
-    async function render() {
-      body.innerHTML = '<em>Personeel ophalen… (alle posten)</em>';
-      try {
-        const data = await analysePersonnel();
-        const transfer = await loadTransferInfo(data.stations[0].id);
-        body.innerHTML = '';
-        body.append(
-          section('📊 Overzicht', renderOverview(data, transfer), true),
-          section(`🔁 Personeel verplaatsen (nog ${transfer.remaining} deze week)`, renderTransfers(data, transfer), true),
-          section('🚒 Specialistische voertuigen', renderSpecialistVehicles(data, transfer), true),
-          section('🎓 Specialisaties, opleiden & nieuwe meldingen', renderSpecialties(data, transfer), true),
-          section('🏠 Personeel per post', renderStations(data), false)
-        );
-        updateBadge();
-      } catch (e) {
-        console.error('[MKS→HA] Personnel panel failed', e);
-        body.innerHTML = `<div class="alert alert-danger">Laden mislukt: ${escapeHtml(e.message)}</div>`;
-      }
-    }
+    return async () => {
+      const data = await analysePersonnel();
+      const transfer = await loadTransferInfo(data.stations[0].id);
+      const overview = renderOverview(data, transfer);
+      const stations = renderStations(data);
+      stations.prepend(overview);
+      return [
+        [`🔁 Personeel zelf verplaatsen (nog ${transfer.remaining} deze week)`, renderTransfers(data, transfer)],
+        ['🏠 Personeel per post', stations],
+      ];
+    };
 
     /* ---- Overview ---- */
     function renderOverview(data, transfer) {
@@ -3302,34 +3245,12 @@
         <small class="text-muted">Verplaatsingen deze week: <b>${transfer.remaining}</b> · een post houdt minimaal ${MIN_STATION_PERSONNEL} personeel · verplaatsen is niet terug te draaien</small>`);
     }
 
-    /* ---- Personnel transfers: suggestions + manual ---- */
+    /* ---- Personnel transfers: manual (suggestions are in "Herverdelen") ---- */
     function renderTransfers(data, transfer) {
       const wrap = el('');
       const untrainedFree = (row) => row.staff.filter((p) => !p.keys.length && !p.boundVehicleId);
       const movable = (row, includeTrained) =>
         Math.max(0, Math.min(row.staff.length - MIN_STATION_PERSONNEL, (includeTrained ? row.staff.filter((p) => !p.boundVehicleId) : untrainedFree(row)).length));
-
-      // Suggestions (surplus -> shortage, nearest first)
-      const { transfers } = planRedistribution(data);
-      const suggestions = transfers.filter((t) => t.from && t.people.length);
-      const shortages = transfers.filter((t) => !t.from);
-      if (!suggestions.length && !shortages.length) wrap.append(el('<small class="text-muted">Geen tekorten: alle posten hebben genoeg personeel voor hun voertuigen.</small>'));
-      suggestions.forEach((t) =>
-        wrap.append(
-          row(
-            `➡️ <b>${t.people.length}</b> van <b>${short(t.from.caption)}</b> naar <b>${short(t.to.caption)}</b><br><small class="text-muted">${escapeHtml(
-              t.people.map((p) => p.name).join(', ')
-            )} · zonder opleiding, niet gekoppeld</small>`,
-            actionButton(
-              'Verplaats',
-              () => transferPersonnel(t.to.id, t.people.map((p) => p.id)),
-              'btn-warning',
-              `${t.people.length} personeel van ${t.from.caption.trim()} naar ${t.to.caption.trim()} verplaatsen?\n\nDit kan NIET ongedaan worden.`
-            )
-          )
-        )
-      );
-      shortages.forEach((t) => wrap.append(el(`<div style="margin-bottom:4px">⚠️ <b>${short(t.to.caption)}</b> <small>nog ${t.missing} tekort, niemand over: start werving</small></div>`)));
 
       // Manual transfer
       const options = data.stationRows
@@ -3383,172 +3304,6 @@
       [from, to, trained].forEach((x) => x.addEventListener('change', update));
       update();
       wrap.append(manual);
-      return wrap;
-    }
-
-    /* ---- Specialist vehicles ---- */
-    function renderSpecialistVehicles(data, transfer) {
-      const wrap = el('');
-      if (!data.specialistVehicles.length) {
-        wrap.append(el('<em>Je hebt nog geen voertuigen die een opleiding vereisen.</em>'));
-        return wrap;
-      }
-      const crewPlan = planSpecialistCrew(data, transfer.remaining);
-      data.specialistVehicles.forEach((s) => {
-        const v = s.vehicle;
-        const base = `<b>${short(v.caption)}</b> <small class="text-muted">· ${short(s.station.caption)} · vereist ${escapeHtml(
-          s.info.education
-        )}</small><br>`;
-
-        // Too many bound (more than the vehicle can carry)
-        if (s.overBound) {
-          // Unbind the untrained ones first, then surplus trained ones
-          const boundToVehicle = data.people.filter((p) => p.boundVehicleId === v.id);
-          const extra = [...boundToVehicle.filter((p) => !p.keys.includes(s.key)), ...boundToVehicle.filter((p) => p.keys.includes(s.key))].slice(0, s.overBound);
-          wrap.append(
-            row(
-              `⚠️ ${base}<small>${s.overBound} persoon/personen te veel gekoppeld (max ${s.full}). Ontkoppelen maakt ze vrij voor andere voertuigen.</small>`,
-              actionButton(`Ontkoppel ${extra.length}`, async () => {
-                for (const p of extra) await unbindPerson(v.id, p.id);
-              })
-            )
-          );
-        }
-
-        if (s.boundHere.length >= s.need) {
-          if (!s.overBound) wrap.append(row(`✅ ${base}<small>${s.boundHere.length}/${s.full} opgeleid en gekoppeld</small>`));
-          return;
-        }
-        const missing = s.need - s.boundHere.length;
-
-        // Free qualified people at this station: bind them
-        if (s.free.length) {
-          const pick = s.free.slice(0, Math.min(s.full - s.boundHere.length, s.free.length));
-          wrap.append(
-            row(
-              `🟡 ${base}<small>${s.free.length} opgeleid maar niet gekoppeld: een TS kan ze meenemen. Koppelen reserveert ze.</small>`,
-              actionButton(`Koppel ${pick.map((p) => p.name).join(', ')}`, async () => {
-                for (const p of pick) await bindPerson(v.id, p.id);
-              })
-            )
-          );
-          return;
-        }
-
-        // Qualified people bound to a vehicle that doesn't need them: rebind
-        if (s.misbound.length) {
-          const pick = s.misbound.slice(0, missing);
-          const from = pick.map((p) => `${p.name} (nu op ${short(data.vehicles.find((x) => x.id === p.boundVehicleId)?.caption || '?')})`).join(', ');
-          wrap.append(
-            row(
-              `🟠 ${base}<small>Opgeleid personeel zit op een ander voertuig: ${from}</small>`,
-              actionButton('Herkoppel', async () => {
-                for (const p of pick) {
-                  if (p.boundVehicleId > 0) await unbindPerson(p.boundVehicleId, p.id);
-                  await bindPerson(v.id, p.id);
-                }
-              })
-            )
-          );
-          return;
-        }
-
-        // Nobody here: move trained people from a post that can spare them (un-binds them first when needed)
-        const move = crewPlan.find((x) => x.type === 'transfer' && x.vehicle.id === v.id);
-        if (move) {
-          const pick = move.people;
-          wrap.append(
-            row(
-              `❌ ${base}<small>Geen opgeleid personeel op deze post. ${pick.length}× ${escapeHtml(
-                s.info.education
-              )} beschikbaar in ${short(move.from.caption)}; ze worden daarna meteen op dit voertuig gekoppeld.</small>`,
-              actionButton(
-                `Verplaats ${pick.length}`,
-                () => executeCrewStep(move),
-                'btn-warning',
-                `${pick.map((p) => p.name).join(', ')} van ${move.from.caption.trim()} naar ${s.station.caption.trim()} verplaatsen en op ${v.caption.trim()} koppelen?\n\nDit kan NIET ongedaan worden en kost ${pick.length} van je ${transfer.remaining} verplaatsingen deze week.`
-              )
-            )
-          );
-          return;
-        }
-        wrap.append(
-          row(`❌ ${base}<small>Niemand met deze opleiding beschikbaar: zie "Opleiden" hieronder.</small>`)
-        );
-      });
-      return wrap;
-    }
-
-    /* ---- Specialties, training and new missions ---- */
-    function renderSpecialties(data, transfer) {
-      const wrap = el('');
-      const fmtCredits = (list) => (list.length ? Math.round(list.reduce((n, m) => n + m.credits, 0) / list.length).toLocaleString('nl-NL') : '0');
-
-      data.specialtyRows.forEach((s) => {
-        const info = s.info || {};
-        const unlockedVehicle = !info.minStations || info.minStations <= data.stationCount;
-        const nextMission = s.next[0];
-        let status;
-        let advice = '';
-
-        if (!s.unlocked.length && !nextMission) return; // not used by fire missions
-
-        if (s.owned) status = '✅';
-        else if (s.unlocked.length) status = '❌';
-        else status = '⏳';
-
-        const missionLine = s.unlocked.length
-          ? `${s.unlocked.length} meldingstype(s) vrijgespeeld (gem. ${fmtCredits(s.unlocked)} cr), bijv. ${escapeHtml(s.unlocked[0].name)}`
-          : `nog geen meldingen`;
-        const nextLine = nextMission
-          ? ` · bij <b>${nextMission.stations}</b> posten: ${escapeHtml(nextMission.name)}`
-          : '';
-
-        if (!s.owned && s.unlocked.length) {
-          if (!unlockedVehicle) advice = `Voertuig te koop vanaf ${info.minStations} posten.`;
-          else if (info.education && !s.trained)
-            advice = `Eerst opleiden: <b>${escapeHtml(info.education)}</b> (min. ${Math.max(1, info.minCrew || 0)}, vol ${info.maxCrew || '?'}).`;
-          else if (info.education) {
-            // Best station: most free qualified people, then a free parking slot
-            const best = data.stationRows
-              .map((r) => ({
-                r,
-                qualified: r.staff.filter((p) => s.key && p.keys.includes(s.key) && !p.boundVehicleId).length,
-                freeSlot: r.station.level + 1 - r.own.length > 0,
-              }))
-              .filter((x) => x.qualified)
-              .sort((a, b) => Number(b.freeSlot) - Number(a.freeSlot) || b.qualified - a.qualified || a.r.station.level - b.r.station.level)[0];
-            advice = best
-              ? `Koop een ${escapeHtml(info.name.split(' ')[0])} bij <b>${short(best.r.station.caption)}</b> (${best.qualified}× opgeleid${
-                  best.freeSlot ? ', plek vrij' : ', eerst level omhoog of personeel verplaatsen naar een post met plek'
-                }).`
-              : `Je ${s.trained} opgeleide mensen zijn allemaal gekoppeld.`;
-          } else advice = `Geen opleiding nodig: koop een ${escapeHtml(info.name?.split(' ')[0] || s.label)} (≈ ${(info.price || 0).toLocaleString('nl-NL')}).`;
-        }
-
-        wrap.append(
-          el(`<div style="margin-bottom:6px">${status} <b>${escapeHtml(s.label)}</b> <small class="text-muted">· in bezit ${s.owned}${
-            info.education ? ` · opgeleid ${s.trained ?? 0}` : ''
-          }</small><br><small>${missionLine}${nextLine}</small>${advice ? `<br><small>👉 ${advice}</small>` : ''}</div>`)
-        );
-      });
-
-      // Training options: with an academy the queue in the VRU panel says what to train next
-      if (data.hasAcademy) {
-        wrap.append(el('<small class="text-muted">🎓 Wat je hierna moet opleiden staat in het VRU-paneel, sectie Opleidingen.</small>'));
-        return wrap;
-      }
-      wrap.append(
-        el(`<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(128,128,128,.3)">
-          <b>Opleiden kan via:</b>
-          <ul style="margin:3px 0 0 16px;padding:0">
-            <li>de <a href="/schoolings" class="lightbox-open">team-academie</a>: vraag in de teamchat om de cursus te openen</li>
-            <li>direct opgeleid personeel aannemen op het wervingsscherm van een post${
-              transfer.hireTrainedPrice ? ` (${transfer.hireTrainedPrice} coins per persoon)` : ''
-            }</li>
-            <li>een eigen Brandweer-academie (≈ 500.000 credits)</li>
-          </ul></div>`)
-      );
       return wrap;
     }
 

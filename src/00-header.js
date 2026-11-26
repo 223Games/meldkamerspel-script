@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.16.1
+// @version      7.17.0
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -62,7 +62,6 @@
       startVehicleTypeId: 17, // 17 = TS 6/7 (1 = TS 8/9, 9 = TS 4/5)
       autoHireDays: 3, // start recruitment after building (0 = off)
       panel: true, // 🚒 VRU panel on the main page (tasks, hiring, expansion, advice, progress)
-      personnelPanel: true, // 👷 personnel panel (specialists, binding, transfers, training advice)
     },
 
     debug: GM_getValue('opt_debug', false), // true = log every step to the browser console (F12)
@@ -150,7 +149,6 @@
         watchBuildForm();
         pollPendingHire();
         if (CONFIG.vru.panel) initPanel();
-        if (CONFIG.vru.personnelPanel) initPersonnelPanel();
       }
       startExtras();
     }
