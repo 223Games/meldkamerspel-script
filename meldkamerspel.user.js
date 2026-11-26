@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.16.0
+// @version      7.16.1
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -2763,7 +2763,8 @@
       ];
       const achieved = recordAchievements(doneKeys);
       const openStations = statuses.filter((x) => x.s.missing.length).sort((a, b) => a.s.code.localeCompare(b.s.code));
-      const openExtras = extras.filter((i) => i.missing);
+      const openExtras = extras.filter((i) => i.missing && !i.unbuilt);
+      const waitingOnPosts = extras.filter((i) => i.missing && i.unbuilt).length; // these follow once the post is built
       openStations.forEach(({ s }) =>
         list.append(
           el(
@@ -2780,7 +2781,7 @@
         openExtras.forEach((i) => (byKind.get(i.x.id) || byKind.set(i.x.id, []).get(i.x.id)).push(i));
         byKind.forEach((items, id) => {
           const x = items[0].x;
-          const where = items.map((i) => `${i.where}${i.missing > 1 ? ` (${i.missing}×)` : ''}${i.unbuilt ? ' ⛔ post nog niet gebouwd' : ''}`).join(', ');
+          const where = items.map((i) => `${i.where}${i.missing > 1 ? ` (${i.missing}×)` : ''}`).join(', ');
           list.append(
             el(
               `<div style="margin-bottom:2px" data-mks-incomplete="1">🟡 <b>${escapeHtml(x.label)}</b> <small class="text-muted">${escapeHtml(x.real)}</small><br><small>${where}</small></div>`
@@ -2789,6 +2790,7 @@
         });
       }
       const doneCount = Object.keys(achieved).length;
+      if (waitingOnPosts) list.append(el(`<div style="margin-top:4px"><small class="text-muted">+ ${waitingOnPosts} voertuigen bij posten die nog niet gebouwd zijn.</small></div>`));
       if (!openStations.length && !openExtras.length && !unbuilt.length) {
         list.append(el(`<div><b>VRU compleet</b> <small class="text-muted">(${doneCount} onderdelen behaald)</small></div>`));
       } else if (doneCount) {
@@ -6092,13 +6094,13 @@ ${rows
    * `posts` = station codes (one vehicle per post unless `count`), `regional` = not at a post (the game needs a fire station).
    */
   const VRU_EXTRAS = [
-    { id: 'ab', typeId: 5, label: 'AB', posts: ['07', '44', '64'], real: 'Adembeschermingshaakarmbak → AB-voertuig' },
+    { id: 'ab', typeId: 5, label: 'AB', posts: ['07', '64'], real: 'Adembeschermingshaakarmbak → AB-voertuig (09-44 staat al in de postlijst)' },
     { id: 'riet', typeId: 153, label: 'DB-RI', posts: ['06', '37', '58', '61'], real: 'Rietdak Brandbestrijdingsteamvoertuig' },
     { id: 'ria', typeId: 154, label: 'RIA', posts: ['06', '37', '58', '61'], real: 'Rietdak-aanhanger (trailer)' },
     { id: 'vi', typeId: 155, label: 'DB-VI', posts: ['21', '23'], real: 'Veetakel Installatie voertuig' },
     { id: 'via', typeId: 156, label: 'VIA', posts: ['29'], real: 'Veetakel Installatie Aanhanger' },
     { id: 'co', typeId: 31, label: 'CO', posts: ['01', '18'], real: 'Commandovoertuig Multi CoPI' },
-    { id: 'sb', typeId: 68, label: 'SB', posts: ['18'], count: 2, real: 'Schuimblusvoertuig (2×)' },
+    { id: 'sb', typeId: 68, label: 'SB', posts: ['18'], count: 2, real: 'Schuimblusvoertuig: 2 in totaal (de eerste staat al in de postlijst)' },
     { id: 'or', typeId: 49, label: 'PM-OR', posts: ['12', '57', '62'], real: 'Oppervlaktereddingsteam voertuig' },
     { id: 'msa', typeId: 71, label: 'MSA', posts: ['04', '14', '16', '21', '26', '30', '32', '56', '58'], real: 'Motorspuitaanhanger (trailer)' },
     { id: 'dpa', typeId: 72, label: 'DPA', posts: ['26', '41', '44', '55'], real: 'Dompelpomphaakarmbak → aanhanger' },

@@ -430,7 +430,8 @@
       ];
       const achieved = recordAchievements(doneKeys);
       const openStations = statuses.filter((x) => x.s.missing.length).sort((a, b) => a.s.code.localeCompare(b.s.code));
-      const openExtras = extras.filter((i) => i.missing);
+      const openExtras = extras.filter((i) => i.missing && !i.unbuilt);
+      const waitingOnPosts = extras.filter((i) => i.missing && i.unbuilt).length; // these follow once the post is built
       openStations.forEach(({ s }) =>
         list.append(
           el(
@@ -447,7 +448,7 @@
         openExtras.forEach((i) => (byKind.get(i.x.id) || byKind.set(i.x.id, []).get(i.x.id)).push(i));
         byKind.forEach((items, id) => {
           const x = items[0].x;
-          const where = items.map((i) => `${i.where}${i.missing > 1 ? ` (${i.missing}×)` : ''}${i.unbuilt ? ' ⛔ post nog niet gebouwd' : ''}`).join(', ');
+          const where = items.map((i) => `${i.where}${i.missing > 1 ? ` (${i.missing}×)` : ''}`).join(', ');
           list.append(
             el(
               `<div style="margin-bottom:2px" data-mks-incomplete="1">🟡 <b>${escapeHtml(x.label)}</b> <small class="text-muted">${escapeHtml(x.real)}</small><br><small>${where}</small></div>`
@@ -456,6 +457,7 @@
         });
       }
       const doneCount = Object.keys(achieved).length;
+      if (waitingOnPosts) list.append(el(`<div style="margin-top:4px"><small class="text-muted">+ ${waitingOnPosts} voertuigen bij posten die nog niet gebouwd zijn.</small></div>`));
       if (!openStations.length && !openExtras.length && !unbuilt.length) {
         list.append(el(`<div><b>VRU compleet</b> <small class="text-muted">(${doneCount} onderdelen behaald)</small></div>`));
       } else if (doneCount) {

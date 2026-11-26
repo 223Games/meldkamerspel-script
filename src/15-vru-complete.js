@@ -8,13 +8,13 @@
    * `posts` = station codes (one vehicle per post unless `count`), `regional` = not at a post (the game needs a fire station).
    */
   const VRU_EXTRAS = [
-    { id: 'ab', typeId: 5, label: 'AB', posts: ['07', '44', '64'], real: 'Adembeschermingshaakarmbak → AB-voertuig' },
+    { id: 'ab', typeId: 5, label: 'AB', posts: ['07', '64'], real: 'Adembeschermingshaakarmbak → AB-voertuig (09-44 staat al in de postlijst)' },
     { id: 'riet', typeId: 153, label: 'DB-RI', posts: ['06', '37', '58', '61'], real: 'Rietdak Brandbestrijdingsteamvoertuig' },
     { id: 'ria', typeId: 154, label: 'RIA', posts: ['06', '37', '58', '61'], real: 'Rietdak-aanhanger (trailer)' },
     { id: 'vi', typeId: 155, label: 'DB-VI', posts: ['21', '23'], real: 'Veetakel Installatie voertuig' },
     { id: 'via', typeId: 156, label: 'VIA', posts: ['29'], real: 'Veetakel Installatie Aanhanger' },
     { id: 'co', typeId: 31, label: 'CO', posts: ['01', '18'], real: 'Commandovoertuig Multi CoPI' },
-    { id: 'sb', typeId: 68, label: 'SB', posts: ['18'], count: 2, real: 'Schuimblusvoertuig (2×)' },
+    { id: 'sb', typeId: 68, label: 'SB', posts: ['18'], count: 2, real: 'Schuimblusvoertuig: 2 in totaal (de eerste staat al in de postlijst)' },
     { id: 'or', typeId: 49, label: 'PM-OR', posts: ['12', '57', '62'], real: 'Oppervlaktereddingsteam voertuig' },
     { id: 'msa', typeId: 71, label: 'MSA', posts: ['04', '14', '16', '21', '26', '30', '32', '56', '58'], real: 'Motorspuitaanhanger (trailer)' },
     { id: 'dpa', typeId: 72, label: 'DPA', posts: ['26', '41', '44', '55'], real: 'Dompelpomphaakarmbak → aanhanger' },

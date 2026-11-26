@@ -16,7 +16,7 @@ const get = (k) => items.find((i) => i.key === k);
 const checks = {
   rietDoneAt06: get('riet@06').missing === 0 && get('ria@06').missing === 0,
   rietUnbuiltPostOpen: get('riet@37').missing === 1 && get('riet@37').unbuilt === true,
-  abDoneAt07: get('ab@07').missing === 0 && get('ab@44').unbuilt === true,
+  abDoneAt07: get('ab@07').missing === 0 && get('ab@64').unbuilt === true,
   regionalAgsNeedsTwo: get('ags@regio').missing === 1, // one AGS owned, West + Oost wanted
   regionalHovdOpen: get('hovd@regio').missing === 2,
   achievementsKept: (() => {
