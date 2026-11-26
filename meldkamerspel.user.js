@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.13.1
+// @version      7.14.0
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -678,8 +678,12 @@
     // Matched on type id too (5 = AB): the row's type text is not always the bare "AB"
     mobile_air_vehicles: { label: 'AB', caption: /(^|\s)AB$/i, typeIds: ['5'], missing: /Adembescherming/i },
     // Specialist: the DB-RI (153) tows the RIA trailer (154). The trailer is a separate row, ticked together with its tractor.
-    thatched_firefighting: { label: 'DB-RI', caption: /^DB-RI$/i, typeIds: ['153'], missing: /Riet/i, withTypeIds: ['154'] },
-    livestock_hoist: { label: 'DB-VI', caption: /^DB-VI$/i, typeIds: ['155'], missing: /Vee(redd|hef)|Dierhef/i },
+    thatched_firefighting: { label: 'DB-RI', caption: /^DB-RI$/i, typeIds: ['153'], missing: /Riet/i, withTypeIds: ['154'], extension: true },
+    livestock_hoist: { label: 'DB-VI', caption: /^DB-VI$/i, typeIds: ['155'], missing: /Vee(redd|hef)|Dierhef/i, extension: true },
+    // Blusrobot (added Nov 2026): BMH-BRB (159) hook-lift, towed by the DB-BRB crew bus (157). Every mission asking for it also needs police + ambulance buildings.
+    fire_extinguisher_robot: { label: 'BMH-BRB', caption: /^(BMH-BRB|DB-BRB)$/i, typeIds: ['159'], missing: /Blusrobot/i, withTypeIds: ['157'], extension: true },
+    // Blusboot (berth = building type 28). Vehicle type ids unknown until a berth is built: matched on name.
+    fire_boat: { label: 'Blusboot', caption: /^(BRV|BB)\b|blusboot|brandweerboot|vaartuig/i, missing: /Blusboot|Brandweerboot|Brandweervaartuig/i, extension: true },
     battalion_chief_vehicles: {
       label: 'OvD-B',
       caption: /OVD/i,
@@ -771,7 +775,6 @@
         const entry = missionId && document.getElementById(`mission_${missionId}`);
         const lat = parseFloat(entry?.getAttribute('latitude'));
         const lng = parseFloat(entry?.getAttribute('longitude'));
-        recordNotOwned(missionId, missed, Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null);
         const { selected, short } = selectVehicles(needed);
         if (Object.keys(short).length && (await loadMoreVehicles())) {
           // Far-away vehicles were not in the list yet: try again for what is still short
@@ -781,6 +784,11 @@
           Object.entries(retry.selected).forEach(([k, n]) => (selected[k] = (selected[k] || 0) + n));
         }
         if (short.water_tankers) logWaterDebug();
+        // Extension vehicles (DB-RI, blusrobot…) still short after everything: the plan reads this as "missed"
+        Object.entries(short).forEach(([k, n]) => {
+          if (CATEGORIES[k].extension) missed.push(`${n}× ${CATEGORIES[k].label}`);
+        });
+        recordNotOwned(missionId, missed, Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null);
         const queued =
           CONFIG.queueBusyVehicles && Object.keys(short).length ? await queueBusyVehicles(short) : {};
         const resources = await selectForResources(typeId);
@@ -3518,6 +3526,9 @@
     // Real VRU posts (Brandbase regio 09, Nov 2026): Rietdak Brandbestrijdingsteamvoertuig / Veetakel Installatie
     { typeId: 26, key: 'thatched_fire', name: 'Rietkapbrandbestrijding', price: 150000, days: 5, vehicle: 'DB-RI of RIA', vehicleTypeId: 153, stations: ['06', '37', '58', '61'], match: /riet|thatch|\bDB-RI\b|\bRIA\b/i },
     { typeId: 27, key: 'livestock_fire', name: 'Veetakels', price: 150000, days: 5, vehicle: 'DB-VI', vehicleTypeId: 155, stations: ['21', '23', '29'], match: /veetakel|livestock|\bDB-VI\b/i },
+    // Added Nov 2026. All 484 missions asking for the robot also need police + ambulance buildings, so for a fire-only
+    // player it counts 0 mission types and never enters the plan; it only does once you actually miss one. Not in the real VRU (Brandbase).
+    { typeId: 28, key: 'fire_extinguisher_robot', name: 'Blusrobot', price: 100000, days: 5, vehicle: 'DB-BRB + BMH-BRB', vehicleTypeId: 157, stations: [], match: /blusrobot|\bBRB\b|extinguisher_robot/i },
   ];
 
   // Own fire academy: train specialists yourself instead of waiting for the team academy
@@ -5207,6 +5218,10 @@ ${rows
     { typeIds: [68], match: /schuim/i, posts: ['18'], real: 'Schuimblusvoertuig' },
     // "brush" = the game's key for nature fire vehicles (TST-NB / NBV)
     { typeIds: [12, 14, 15], match: /brush|natuurbrand|\bNBV?\b/i, posts: ['01', '03', '07', '10', '22', '30', '31', '32', '33', '35', '50', '51', '52', '53', '54', '55', '64', '66'], real: 'Natuurbrandbestrijdingsvoertuig (NBV)' },
+    // Brandbase regio 09 (Nov 2026): Brandweervaartuig middel/klein (BRV) at Bunschoten, Vinkeveen, Breukelen, Vianen; no blusrobot in the VRU
+    { match: /blusboot|brandweervaartuig|\bBRV\b|fire_boat/i, posts: ['04', '14', '36', '57'], real: 'Brandweervaartuig (BRV)' },
+    // Droneteams / TDV are regional (09-80), not at a post: the game needs a fire station
+    { match: /drone|\bTDV\b|verkenningsteam/i, hq: true, real: 'Droneteam / TDV (regionaal)' },
     { typeIds: [33], match: /waterongeval|duik/i, posts: ['01', '04', '13', '39', '44', '59'], real: 'Waterongevallen' },
   ];
 

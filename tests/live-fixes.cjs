@@ -164,7 +164,23 @@ w.eval('const GM_getValue=window.GM_getValue,GM_setValue=window.GM_setValue,GM_r
   await new Promise((r) => setTimeout(r, 1500));
   const thatchSelected = [...thatchWin.querySelectorAll('.vehicle_checkbox:checked')].map((c) => c.value).sort();
 
+  // Blusrobot: BMH-BRB (159) + its DB-BRB (157) get ticked; without them the miss is logged for the plan
+  const robotDoc = (rows) => new JSDOM(`<a id="mission_help" href="/einsaetze/5"></a><h1 id="missionH1">Brand afvalverwerker</h1>
+    <table id="mission_vehicle_at_mission"><tbody></tbody></table><table id="mission_vehicle_driving"><tbody></tbody></table>
+    <form id="mission-form"><table><tbody id="vehicle_show_table_body_all">${rows}</tbody></table></form>`, { url: 'https://www.meldkamerspel.com/missions/120' }).window.document;
+  w.localStorage.setItem('mks_ha_mission_types_v1', JSON.stringify({ ts: Date.now(), data: { 5: { r: { fire_extinguisher_robot: 1 }, c: {} } } }));
+  const robotWin = robotDoc(row('BMH-BRB', 71, 159, 'BRW 09-01 A') + row('DB-BRB', 72, 157, 'BRW 09-01 A'));
+  w.__mks.initDispatchAssistant(robotWin);
+  await new Promise((r) => setTimeout(r, 1500));
+  const robotSelected = [...robotWin.querySelectorAll('.vehicle_checkbox:checked')].map((c) => c.value).sort();
+  w.localStorage.removeItem('mks_not_owned_v1');
+  w.__mks.initDispatchAssistant(robotDoc(''));
+  await new Promise((r) => setTimeout(r, 1500));
+  const robotMissLogged = /BRB/.test(w.localStorage.getItem('mks_not_owned_v1') || '');
+
   const checks = {
+    robotSelected: robotSelected.join() === '71,72',
+    robotMissLogged,
     abAndRietkapSelected: thatchSelected.join() === '61,62,63',
     eventsFirst: eventFirst === '▶ Alarmeren → Sinterklaas pakjes bezorgen' && eventOff === '▶ Alarmeren → Bijna klaar',
     worklistPicksAlmostDone: wlText === '▶ Alarmeren → Bijna klaar' && gameNextClicked && pending?.id === '503',

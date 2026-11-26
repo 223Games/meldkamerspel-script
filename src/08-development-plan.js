@@ -17,6 +17,9 @@
     // Real VRU posts (Brandbase regio 09, Nov 2026): Rietdak Brandbestrijdingsteamvoertuig / Veetakel Installatie
     { typeId: 26, key: 'thatched_fire', name: 'Rietkapbrandbestrijding', price: 150000, days: 5, vehicle: 'DB-RI of RIA', vehicleTypeId: 153, stations: ['06', '37', '58', '61'], match: /riet|thatch|\bDB-RI\b|\bRIA\b/i },
     { typeId: 27, key: 'livestock_fire', name: 'Veetakels', price: 150000, days: 5, vehicle: 'DB-VI', vehicleTypeId: 155, stations: ['21', '23', '29'], match: /veetakel|livestock|\bDB-VI\b/i },
+    // Added Nov 2026. All 484 missions asking for the robot also need police + ambulance buildings, so for a fire-only
+    // player it counts 0 mission types and never enters the plan; it only does once you actually miss one. Not in the real VRU (Brandbase).
+    { typeId: 28, key: 'fire_extinguisher_robot', name: 'Blusrobot', price: 100000, days: 5, vehicle: 'DB-BRB + BMH-BRB', vehicleTypeId: 157, stations: [], match: /blusrobot|\bBRB\b|extinguisher_robot/i },
   ];
 
   // Own fire academy: train specialists yourself instead of waiting for the team academy

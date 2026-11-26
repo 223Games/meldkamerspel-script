@@ -159,8 +159,12 @@
     // Matched on type id too (5 = AB): the row's type text is not always the bare "AB"
     mobile_air_vehicles: { label: 'AB', caption: /(^|\s)AB$/i, typeIds: ['5'], missing: /Adembescherming/i },
     // Specialist: the DB-RI (153) tows the RIA trailer (154). The trailer is a separate row, ticked together with its tractor.
-    thatched_firefighting: { label: 'DB-RI', caption: /^DB-RI$/i, typeIds: ['153'], missing: /Riet/i, withTypeIds: ['154'] },
-    livestock_hoist: { label: 'DB-VI', caption: /^DB-VI$/i, typeIds: ['155'], missing: /Vee(redd|hef)|Dierhef/i },
+    thatched_firefighting: { label: 'DB-RI', caption: /^DB-RI$/i, typeIds: ['153'], missing: /Riet/i, withTypeIds: ['154'], extension: true },
+    livestock_hoist: { label: 'DB-VI', caption: /^DB-VI$/i, typeIds: ['155'], missing: /Vee(redd|hef)|Dierhef/i, extension: true },
+    // Blusrobot (added Nov 2026): BMH-BRB (159) hook-lift, towed by the DB-BRB crew bus (157). Every mission asking for it also needs police + ambulance buildings.
+    fire_extinguisher_robot: { label: 'BMH-BRB', caption: /^(BMH-BRB|DB-BRB)$/i, typeIds: ['159'], missing: /Blusrobot/i, withTypeIds: ['157'], extension: true },
+    // Blusboot (berth = building type 28). Vehicle type ids unknown until a berth is built: matched on name.
+    fire_boat: { label: 'Blusboot', caption: /^(BRV|BB)\b|blusboot|brandweerboot|vaartuig/i, missing: /Blusboot|Brandweerboot|Brandweervaartuig/i, extension: true },
     battalion_chief_vehicles: {
       label: 'OvD-B',
       caption: /OVD/i,
@@ -252,7 +256,6 @@
         const entry = missionId && document.getElementById(`mission_${missionId}`);
         const lat = parseFloat(entry?.getAttribute('latitude'));
         const lng = parseFloat(entry?.getAttribute('longitude'));
-        recordNotOwned(missionId, missed, Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null);
         const { selected, short } = selectVehicles(needed);
         if (Object.keys(short).length && (await loadMoreVehicles())) {
           // Far-away vehicles were not in the list yet: try again for what is still short
@@ -262,6 +265,11 @@
           Object.entries(retry.selected).forEach(([k, n]) => (selected[k] = (selected[k] || 0) + n));
         }
         if (short.water_tankers) logWaterDebug();
+        // Extension vehicles (DB-RI, blusrobot…) still short after everything: the plan reads this as "missed"
+        Object.entries(short).forEach(([k, n]) => {
+          if (CATEGORIES[k].extension) missed.push(`${n}× ${CATEGORIES[k].label}`);
+        });
+        recordNotOwned(missionId, missed, Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null);
         const queued =
           CONFIG.queueBusyVehicles && Object.keys(short).length ? await queueBusyVehicles(short) : {};
         const resources = await selectForResources(typeId);
