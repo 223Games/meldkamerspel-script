@@ -2,7 +2,7 @@
 const { JSDOM } = require('jsdom');
 const path = require('path');
 const code = require('fs').readFileSync(path.join(__dirname, '..', 'meldkamerspel.user.js'), 'utf8');
-const expose = 'window.__mks = { planSpecialistCrew };\n})();';
+const expose = 'window.__mks = { planSpecialistCrew, findIdleTrained };\n})();';
 const body = code.replace(/\n\s*boot\(\);\s*\n\}\)\(\);\s*$/, `\n${expose}`);
 if (body === code) throw new Error('footer not found');
 const w = new JSDOM('<div id="mission_list"></div>', { url: 'https://www.meldkamerspel.com/', runScripts: 'outside-only' }).window;
@@ -41,7 +41,19 @@ const p4 = w.__mks.planSpecialistCrew(mk(rows(filler(10, 100), [...trainedB, ...
 // 5. donor would drop below 10 staff → no transfer
 const p5 = w.__mks.planSpecialistCrew(mk(rows(filler(10, 100), [...trainedB, ...filler(8, 200)], filler(10, 300))), 5);
 
+// Idle trained people: posts with trained, unbound people but no car for that education (v7.15.0)
+const stA = { id: 1, caption: 'BRW 09-01 A' }, stB = { id: 2, caption: 'BRW 09-02 B' }, stC = { id: 3, caption: 'BRW 09-03 C' };
+const ppl = [person(1, ['ags'], { buildingId: 1 }), person(2, ['ags'], { buildingId: 1 }), person(3, ['ags'], { buildingId: 2 }), person(4, ['ags'], { buildingId: 3, boundVehicleId: 9 }), person(5, ['ags'], { buildingId: 3 })];
+const idle = w.__mks.findIdleTrained({
+  stations: [stA, stB, stC], people: ppl,
+  vehicles: [{ id: 9, vehicle_type: 24, building_id: 3 }],
+  typeInfo: { 24: { name: 'AGS', education: 'Adviseur Gevaarlijke Stoffen' }, 17: { name: 'TS', education: null } },
+  keyOf: (e) => (e ? 'ags' : null),
+})[0];
+
 const checks = {
+  idleTrainedPerPost: idle?.posts.map((x) => `${x.station.id}:${x.idle}`).join() === '1:2,2:1' && idle.owned === 1, // C has the car: not idle
+
   bindsFreeTrained: p1.length === 1 && p1[0].type === 'bind' && p1[0].people.length === 2,
   rebindsFromOtherVehicle: p2.length === 1 && p2[0].type === 'rebind' && p2[0].people.map((p) => p.id).join() === '3,4',
   transfersFromPostThatCanSpare: p3.length === 1 && p3[0].type === 'transfer' && p3[0].from.id === 2 && p3[0].people.length === 2 && p3[0].station.id === 1,

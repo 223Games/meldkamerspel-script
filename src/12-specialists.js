@@ -191,6 +191,36 @@
   }
 
   /** Every education the vehicle shop asks for: which vehicles need it, how many you own, how many people are trained. */
+  /** Posts with trained, unbound people but no car that needs them: the best place to buy the next one. */
+  function renderIdleTrained(data) {
+    const wrap = document.createElement('div');
+    if (!data.idleTrained?.length) return wrap;
+    wrap.innerHTML = '<div style="margin-top:8px"><b>🎓 Opgeleid personeel zonder auto op de post</b></div>';
+    data.idleTrained.forEach(({ education, types, owned, posts }) => {
+      const best = posts[0];
+      const row = document.createElement('div');
+      row.setAttribute('data-mks-specialist', 'opt');
+      row.style.cssText = 'display:flex;justify-content:space-between;gap:6px;margin:3px 0';
+      const list = posts.map((x) => `${shortPost(x.station.caption)} (${x.idle})`).join(', ');
+      row.innerHTML = `<span>🟡 <b>${escapeHtml(education)}</b> <small class="text-muted">· ${escapeHtml(
+        types.map((t) => t.name).join(' / ')
+      )} · ${owned ? `${owned}× in bezit elders` : 'nog geen auto'}</small><br><small>${list}</small><br><small class="text-muted">Een (extra) auto op ${shortPost(
+        best.station.caption
+      )} is meteen bemand.</small></span>`;
+      const a = document.createElement('a');
+      a.href = '#';
+      a.className = 'btn btn-xs btn-default';
+      a.textContent = 'Winkel';
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        openLightbox(`/buildings/${best.station.id}/vehicles/new`);
+      });
+      row.append(a);
+      wrap.append(row);
+    });
+    return wrap;
+  }
+
   function renderEducationCatalog(data, vehicles) {
     const byEdu = {};
     Object.entries(data.typeInfo || {}).forEach(([typeId, info]) => {
@@ -283,6 +313,7 @@
           row.append(right);
           wrap.append(row);
         });
+        wrap.append(renderIdleTrained(data));
         wrap.append(renderEducationCatalog(data, vehicles));
         const foot = document.createElement('small');
         foot.className = 'text-muted';

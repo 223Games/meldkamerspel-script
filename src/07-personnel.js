@@ -256,6 +256,34 @@
   /** Builds the complete picture; pure data, no UI. */
   // Panels ask for this several times at once (plan, redistribution, personnel): share one result for 15 s
   let personnelCache = null;
+  /**
+   * Trained people at a post without a vehicle that needs their education (the car stands elsewhere or is not bought yet).
+   * Per education: the posts with the most idle people first, so a new car there is crewed from day one.
+   */
+  function findIdleTrained({ stations, people, vehicles, typeInfo, keyOf }) {
+    const byEducation = {};
+    Object.entries(typeInfo).forEach(([typeId, info]) => {
+      if (info.education) (byEducation[info.education] ||= []).push({ typeId: Number(typeId), name: info.name });
+    });
+    return Object.entries(byEducation)
+      .map(([education, types]) => {
+        const key = keyOf(education);
+        if (!key) return null;
+        const typeIds = types.map((t) => t.typeId);
+        const owned = vehicles.filter((v) => typeIds.includes(v.vehicle_type) && stations.some((s) => s.id === v.building_id));
+        const posts = stations
+          .map((station) => {
+            const idle = people.filter((p) => p.buildingId === station.id && p.keys.includes(key) && !p.boundVehicleId);
+            const hasCar = owned.some((v) => v.building_id === station.id);
+            return { station, idle: idle.length, hasCar };
+          })
+          .filter((x) => x.idle && !x.hasCar)
+          .sort((a, b) => b.idle - a.idle);
+        return posts.length ? { education, types, owned: owned.length, posts } : null;
+      })
+      .filter(Boolean);
+  }
+
   function analysePersonnel() {
     if (personnelCache && Date.now() - personnelCache.ts < 15e3) return personnelCache.promise;
     const promise = analysePersonnelUncached().catch((e) => {
@@ -339,7 +367,9 @@
       return { ...s, typeId, info, unlocked, next, owned, key, trained };
     });
 
-    return { stations, stationRows, people, vehicles, typeInfo, specialistVehicles, specialtyRows, stationCount, keyOf, hasAcademy: buildings.some((b) => b.building_type === FIRE_ACADEMY_TYPE) };
+    const idleTrained = findIdleTrained({ stations, people, vehicles, typeInfo, keyOf });
+
+    return { stations, stationRows, people, vehicles, typeInfo, specialistVehicles, specialtyRows, idleTrained, stationCount, keyOf, hasAcademy: buildings.some((b) => b.building_type === FIRE_ACADEMY_TYPE) };
   }
 
   function initPersonnelPanel() {

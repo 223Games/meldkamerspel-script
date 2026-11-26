@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Meldkamerspel → Home Assistant + Alarmeerhulp + VRU
 // @namespace    https://223studio.nl/
-// @version      7.14.0
+// @version      7.15.0
 // @description  HA lamp feedback, dispatch assistant and VRU (Veiligheidsregio Utrecht) naming for stations and vehicles
 // @match        https://www.meldkamerspel.com/*
 // @match        https://meldkamerspel.com/*
@@ -3038,6 +3038,34 @@
   /** Builds the complete picture; pure data, no UI. */
   // Panels ask for this several times at once (plan, redistribution, personnel): share one result for 15 s
   let personnelCache = null;
+  /**
+   * Trained people at a post without a vehicle that needs their education (the car stands elsewhere or is not bought yet).
+   * Per education: the posts with the most idle people first, so a new car there is crewed from day one.
+   */
+  function findIdleTrained({ stations, people, vehicles, typeInfo, keyOf }) {
+    const byEducation = {};
+    Object.entries(typeInfo).forEach(([typeId, info]) => {
+      if (info.education) (byEducation[info.education] ||= []).push({ typeId: Number(typeId), name: info.name });
+    });
+    return Object.entries(byEducation)
+      .map(([education, types]) => {
+        const key = keyOf(education);
+        if (!key) return null;
+        const typeIds = types.map((t) => t.typeId);
+        const owned = vehicles.filter((v) => typeIds.includes(v.vehicle_type) && stations.some((s) => s.id === v.building_id));
+        const posts = stations
+          .map((station) => {
+            const idle = people.filter((p) => p.buildingId === station.id && p.keys.includes(key) && !p.boundVehicleId);
+            const hasCar = owned.some((v) => v.building_id === station.id);
+            return { station, idle: idle.length, hasCar };
+          })
+          .filter((x) => x.idle && !x.hasCar)
+          .sort((a, b) => b.idle - a.idle);
+        return posts.length ? { education, types, owned: owned.length, posts } : null;
+      })
+      .filter(Boolean);
+  }
+
   function analysePersonnel() {
     if (personnelCache && Date.now() - personnelCache.ts < 15e3) return personnelCache.promise;
     const promise = analysePersonnelUncached().catch((e) => {
@@ -3121,7 +3149,9 @@
       return { ...s, typeId, info, unlocked, next, owned, key, trained };
     });
 
-    return { stations, stationRows, people, vehicles, typeInfo, specialistVehicles, specialtyRows, stationCount, keyOf, hasAcademy: buildings.some((b) => b.building_type === FIRE_ACADEMY_TYPE) };
+    const idleTrained = findIdleTrained({ stations, people, vehicles, typeInfo, keyOf });
+
+    return { stations, stationRows, people, vehicles, typeInfo, specialistVehicles, specialtyRows, idleTrained, stationCount, keyOf, hasAcademy: buildings.some((b) => b.building_type === FIRE_ACADEMY_TYPE) };
   }
 
   function initPersonnelPanel() {
@@ -5386,6 +5416,36 @@ ${rows
   }
 
   /** Every education the vehicle shop asks for: which vehicles need it, how many you own, how many people are trained. */
+  /** Posts with trained, unbound people but no car that needs them: the best place to buy the next one. */
+  function renderIdleTrained(data) {
+    const wrap = document.createElement('div');
+    if (!data.idleTrained?.length) return wrap;
+    wrap.innerHTML = '<div style="margin-top:8px"><b>🎓 Opgeleid personeel zonder auto op de post</b></div>';
+    data.idleTrained.forEach(({ education, types, owned, posts }) => {
+      const best = posts[0];
+      const row = document.createElement('div');
+      row.setAttribute('data-mks-specialist', 'opt');
+      row.style.cssText = 'display:flex;justify-content:space-between;gap:6px;margin:3px 0';
+      const list = posts.map((x) => `${shortPost(x.station.caption)} (${x.idle})`).join(', ');
+      row.innerHTML = `<span>🟡 <b>${escapeHtml(education)}</b> <small class="text-muted">· ${escapeHtml(
+        types.map((t) => t.name).join(' / ')
+      )} · ${owned ? `${owned}× in bezit elders` : 'nog geen auto'}</small><br><small>${list}</small><br><small class="text-muted">Een (extra) auto op ${shortPost(
+        best.station.caption
+      )} is meteen bemand.</small></span>`;
+      const a = document.createElement('a');
+      a.href = '#';
+      a.className = 'btn btn-xs btn-default';
+      a.textContent = 'Winkel';
+      a.addEventListener('click', (e) => {
+        e.preventDefault();
+        openLightbox(`/buildings/${best.station.id}/vehicles/new`);
+      });
+      row.append(a);
+      wrap.append(row);
+    });
+    return wrap;
+  }
+
   function renderEducationCatalog(data, vehicles) {
     const byEdu = {};
     Object.entries(data.typeInfo || {}).forEach(([typeId, info]) => {
@@ -5478,6 +5538,7 @@ ${rows
           row.append(right);
           wrap.append(row);
         });
+        wrap.append(renderIdleTrained(data));
         wrap.append(renderEducationCatalog(data, vehicles));
         const foot = document.createElement('small');
         foot.className = 'text-muted';
