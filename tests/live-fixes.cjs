@@ -186,6 +186,7 @@ w.eval('const GM_getValue=window.GM_getValue,GM_setValue=window.GM_setValue,GM_r
     worklistPicksAlmostDone: wlText === '▶ Alarmeren → Bijna klaar' && gameNextClicked && pending?.id === '503',
     worklistRedirects: redirected && gameNextDoc.location.href === '/missions/503' && !w.sessionStorage.getItem('mks_worklist_next'),
     brushRecognised: brushSelected.join() === '52' && !/brush/.test(brushText),
+    rietMissingText: (() => { const r = w.__mks.parseMissingVehicles('Missende voertuigen: 1 DB-RI of RIA, 1 DB-VI of VIA'); return r.missing.thatched_firefighting === 1 && r.missing.livestock_hoist === 1 && !r.unknown.length; })(),
     natuurbrandMissingText: w.__mks.parseMissingVehicles('Missende voertuigen: 1 Natuurbrandbestrijdingsvoertuig, 2 Tankautospuiten').missing.brush_trucks === 1,
     mapkitRing: added.overlays.length === 1 && added.overlays[0].o.style.strokeColor === '#f9a825',
     mapkitBadge: added.annotations.length === 1 && added.annotations[0].el.textContent === '1/2',

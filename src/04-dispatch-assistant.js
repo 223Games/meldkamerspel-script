@@ -159,10 +159,10 @@
     // Matched on type id too (5 = AB): the row's type text is not always the bare "AB"
     mobile_air_vehicles: { label: 'AB', caption: /(^|\s)AB$/i, typeIds: ['5'], missing: /Adembescherming/i },
     // Specialist: the DB-RI (153) tows the RIA trailer (154). The trailer is a separate row, ticked together with its tractor.
-    thatched_firefighting: { label: 'DB-RI', caption: /^DB-RI$/i, typeIds: ['153'], missing: /Riet/i, withTypeIds: ['154'], extension: true },
-    livestock_hoist: { label: 'DB-VI', caption: /^DB-VI$/i, typeIds: ['155'], missing: /Vee(redd|hef)|Dierhef/i, extension: true },
+    thatched_firefighting: { label: 'DB-RI', caption: /^DB-RI$/i, typeIds: ['153'], missing: /Riet|\bDB-RI\b|\bRIA\b/i, withTypeIds: ['154'], extension: true },
+    livestock_hoist: { label: 'DB-VI', caption: /^DB-VI$/i, typeIds: ['155'], missing: /Vee(redd|hef)|Dierhef|\bDB-VI\b|\bVIA\b/i, extension: true },
     // Blusrobot (added Nov 2026): BMH-BRB (159) hook-lift, towed by the DB-BRB crew bus (157). Every mission asking for it also needs police + ambulance buildings.
-    fire_extinguisher_robot: { label: 'BMH-BRB', caption: /^(BMH-BRB|DB-BRB)$/i, typeIds: ['159'], missing: /Blusrobot/i, withTypeIds: ['157'], extension: true },
+    fire_extinguisher_robot: { label: 'BMH-BRB', caption: /^(BMH-BRB|DB-BRB)$/i, typeIds: ['159'], missing: /Blusrobot|\bBMH-BRB\b|\bDB-BRB\b/i, withTypeIds: ['157'], extension: true },
     // Blusboot (berth = building type 28). Vehicle type ids unknown until a berth is built: matched on name.
     fire_boat: { label: 'Blusboot', caption: /^(BRV|BB)\b|blusboot|brandweerboot|vaartuig/i, missing: /Blusboot|Brandweerboot|Brandweervaartuig/i, extension: true },
     battalion_chief_vehicles: {
